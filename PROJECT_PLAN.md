@@ -72,4 +72,4 @@ If action prediction distillation is completed ahead of schedule, explore **reas
 
 ---
 
-*Project by Oakley Thomas | CSE676 — University at Buffalo | Spring 2026*
+*Project by Oakley Thomas and Harsh Shinde | CSE676 — University at Buffalo | Spring 2026*
