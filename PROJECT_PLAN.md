@@ -25,15 +25,15 @@ This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 
 
 ---
 
-## 4-Week Plan
+## Plan
 
-### Week 1 — Setup & Baseline Profiling
+### Step 1 — Setup & Baseline Profiling
 - Clone [Alpamayo GitHub repo](https://github.com/NVlabs/alpamayo) and load model from HuggingFace
 - Run teacher inference on ~100 clips from the physical AI dataset
 - Profile teacher: inference latency, VRAM usage, trajectory prediction quality
 - Establish baseline metrics (minADE, RMSE)
 
-### Week 2 — Student Architecture & Distillation Pipeline
+### Step 2 - Student Architecture & Distillation Pipeline
 - Select student model architecture (2B–4B parameter transformer)
 - Implement distillation training loop:
   - KL divergence loss on teacher trajectory logits (soft targets)
@@ -41,13 +41,13 @@ This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 
 - Set up data loading and training infrastructure
 - Launch first training run
 
-### Week 3 — Training & Iteration
+### Step 3 — Training & Iteration
 - Iteratively tune distillation temperature, learning rate, batch size
 - Train student model to convergence on dataset subset
 - Evaluate intermediate checkpoints against teacher performance
 - Identify sweet spot between model size and trajectory accuracy
 
-### Week 4 — Evaluation & Writeup
+### Step 4 — Evaluation & Writeup
 - Benchmark teacher vs. student on held-out test clips
 - Measure: trajectory error (minADE, RMSE), inference speed, memory footprint
 - Produce comparison table and analysis
