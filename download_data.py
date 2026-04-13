@@ -15,8 +15,8 @@ files_to_download = [
     # Egomotion labels (trajectory ground truth)
     "labels/egomotion/egomotion.chunk_0000.zip",
     # Calibration
-    "calibration/camera_intrinsics/camera_intrinsics.chunk_0000.zip",
-    "calibration/sensor_extrinsics/sensor_extrinsics.chunk_0000.zip",
+    "calibration/camera_intrinsics/camera_intrinsics.chunk_0000.parquet",
+    "calibration/sensor_extrinsics/sensor_extrinsics.chunk_0000.parquet",
     # Metadata (single parquet files, not chunked)
     "metadata/data_collection.parquet",
     "metadata/feature_presence.parquet",
