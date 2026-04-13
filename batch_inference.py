@@ -46,6 +46,18 @@ def parse_args() -> argparse.Namespace:
         default=5_100_000,
         help="Timestamp offset in microseconds for each clip (default: 5.1s)",
     )
+    parser.add_argument(
+        "--clip-offset",
+        type=int,
+        default=0,
+        help="Skip the first N clips (for splitting work across GPUs)",
+    )
+    parser.add_argument(
+        "--clip-limit",
+        type=int,
+        default=None,
+        help="Maximum number of clips to evaluate (for splitting work across GPUs)",
+    )
     return parser.parse_args()
 
 
@@ -97,7 +109,11 @@ def main() -> None:
         (clip_index["chunk"] == args.chunk) & (clip_index["clip_is_valid"] == True)
     ].index.tolist()
 
-    print(f"Clips to evaluate: {len(clip_ids)} (chunk {args.chunk})")
+    clip_ids = clip_ids[args.clip_offset:]
+    if args.clip_limit is not None:
+        clip_ids = clip_ids[: args.clip_limit]
+
+    print(f"Clips to evaluate: {len(clip_ids)} (chunk {args.chunk}, offset {args.clip_offset})")
 
     # ------------------------------------------------------------------ #
     # Load model (once)                                                   #
