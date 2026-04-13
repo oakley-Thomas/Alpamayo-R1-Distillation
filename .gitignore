@@ -1,0 +1,16 @@
+# Virtual environment
+.venv/
+
+# Dataset (large files, downloaded via download_data.py)
+data/
+
+# HuggingFace cache
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
