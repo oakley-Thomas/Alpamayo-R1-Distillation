@@ -130,7 +130,7 @@ def main() -> None:
                 clip_id,
                 t0_us=args.t0_us,
                 avdi=avdi,
-                maybe_stream=False,
+                maybe_stream=True,
             )
         except Exception as exc:
             print(f"{prefix}  SKIP (load: {exc})")
