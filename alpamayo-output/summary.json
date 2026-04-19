@@ -1,0 +1,14 @@
+{
+  "model": "nvidia/Alpamayo-1.5-10B",
+  "chunk": 0,
+  "num_traj_samples": 6,
+  "n_clips_evaluated": 100,
+  "n_clips_skipped": 0,
+  "mean_min_ade": 0.886483428736683,
+  "std_min_ade": 1.2523669159411555,
+  "mean_rmse": 1.2306469241343438,
+  "std_rmse": 1.8253519520986183,
+  "mean_latency_s": 462.75790000000006,
+  "total_latency_min": 771.2631666666667,
+  "peak_vram_gb": 44.52
+}
