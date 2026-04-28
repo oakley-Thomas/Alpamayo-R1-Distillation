@@ -1,0 +1,128 @@
+# configs/student.yaml
+# Student VLA architecture configuration.
+# Target: 2–4B parameters total, <50ms end-to-end on RTX 5080.
+#
+# DECISIONS RESOLVED:
+#   H0.1 — vocab_strategy: shared_tokenizer (Cosmos-Reason2 uses Qwen3-VL tokenizer)
+#   H0.2 — backbone: Qwen/Qwen3-VL-2B-Instruct (same base as Cosmos-Reason2-2B)
+#   Processor: AutoProcessor.from_pretrained("nvidia/Cosmos-Reason2-2B")
+
+model_name: "alpamayo-student-v1"
+total_param_budget_billions: 3.0  # soft target for sanity-check at init
+
+# Processor to load for tokenization — reuse teacher's directly.
+# This guarantees vocab alignment for logit KD.
+processor_id: "nvidia/Cosmos-Reason2-2B"
+
+vision_encoder:
+  # Qwen3-VL uses its own built-in vision encoder (ViT-based).
+  # We reuse it from the backbone rather than a separate SigLIP.
+  # This avoids a tokenizer/embedding mismatch between vision and text.
+  source: "backbone"  # "backbone" | "siglip" (siglip requires separate resampler)
+  # Kept for reference — only used if source="siglip"
+  siglip_name: "google/siglip-so400m-patch14-384"
+  freeze_until_stage: 3  # frozen during stage 1, partially unfrozen at stage 3
+  input_resolution: [320, 576]  # H, W — Qwen3-VL processor handles downsample
+  # Note: Qwen3-VL's internal vision encoder outputs tokens fed directly to LLM.
+  # No separate resampler needed — the built-in MLP projector handles reduction.
+
+resampler:
+  # Only applicable if vision_encoder.source = "siglip".
+  # With Qwen3-VL backbone, the built-in projector replaces this.
+  enabled: false
+  type: "qformer"
+  num_queries: 256
+  num_layers: 4
+  num_heads: 8
+  hidden_dim: 1024
+
+egomotion_encoder:
+  # 3D translation + 9D (3x3) rotation per timestep.
+  input_dim: 12
+  history_steps: 4
+  hidden_dim: 256
+  output_tokens: 4  # prefix tokens injected before visual tokens
+
+backbone:
+  # DECIDED (H0.1 + H0.2): Qwen3-VL-2B-Instruct.
+  # Cosmos-Reason2-2B is a fine-tune of Qwen3-VL-2B-Instruct, so this shares
+  # the exact tokenizer, vocabulary, and architecture with the teacher backbone.
+  # Logit KD is valid with no vocabulary remapping.
+  #
+  # Load with:
+  #   from transformers import Qwen3VLForConditionalGeneration
+  #   model = Qwen3VLForConditionalGeneration.from_pretrained(
+  #       "Qwen/Qwen3-VL-2B-Instruct", torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+  #   )
+  name: "Qwen/Qwen3-VL-2B-Instruct"
+  dtype: "bfloat16"
+  attn_implementation: "sdpa"  # validated on Blackwell; fallback from flash-attn
+  max_position_embeddings: 4096
+  use_lora: true
+  lora:
+    r: 32
+    alpha: 64
+    dropout: 0.05
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  gradient_checkpointing: true
+
+action_decoder:
+  # See H0.3. Default flow matching for balance.
+  type: <DECIDE: "flow_matching" | "mlp_codebook" | "consistency_distilled_diffusion">
+
+  # --- Flow matching settings (used if type=flow_matching) ---
+  flow_matching:
+    num_sampling_steps: 4  # 1–4; lower = faster, higher = smoother
+    hidden_dim: 768
+    num_layers: 6
+    num_heads: 12
+    dit_style: true  # DiT-style transformer with adaptive layernorm
+
+  # --- MLP codebook settings (used if type=mlp_codebook) ---
+  mlp_codebook:
+    codebook_size: 1024
+    codebook_path: <DECIDE: path to pretrained VQ-VAE on GT trajectories>
+    residual_mlp_layers: 3
+    residual_mlp_hidden: 512
+
+  # --- Consistency model settings (used if type=consistency_distilled_diffusion) ---
+  consistency:
+    teacher_diffusion_steps: 50
+    student_steps: 1
+    distill_method: "consistency_training"  # vs "consistency_distillation"
+
+  # Output trajectory specification — same regardless of decoder type.
+  output:
+    horizon_seconds: 6.0
+    waypoints_per_second: 2  # → 12 waypoints
+    fields: ["x", "y", "heading"]
+
+inference:
+  # Latency target on RTX 5080.
+  target_p50_ms: 30
+  target_p95_ms: 50
+  precision: "fp16"  # "fp16" | "bf16" | "int8"
+  compile_mode: "reduce-overhead"  # torch.compile mode; null to disable
+  kv_cache: true
+
+  # CoT generation length cap to prevent runaway latency.
+  max_cot_tokens: 128
+  cot_sampling:
+    temperature: 0.7
+    top_p: 0.9
+    repetition_penalty: 1.05
+
+training_data_contract:
+  # What each training sample must contain after Phase 2 rollout.
+  required_fields:
+    - "scene_id"
+    - "cameras"           # [4, 4, 3, 320, 576]
+    - "egomotion"         # [4, 12]
+    - "teacher_tokens"    # variable length
+    - "teacher_topk_logits"  # [L, 32]
+    - "teacher_topk_indices" # [L, 32]
+    - "teacher_trajectory"   # [12, 3]
+    - "groundtruth_trajectory"  # [12, 3]
+  optional_fields:
+    - "teacher_hidden_states"  # if capture_hidden_layers non-empty
+    - "scene_metadata"

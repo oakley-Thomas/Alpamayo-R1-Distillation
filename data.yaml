@@ -1,0 +1,80 @@
+# configs/data.yaml
+# Dataset paths and rollout configuration.
+# Populate <DECIDE> markers from H0.4 and H2.4.
+
+datasets:
+  # Source datasets to draw scenes from.
+  # Comment out unused ones; LLM should error if all are disabled.
+
+  nvidia_physical_ai:
+    enabled: <DECIDE: true | false>
+    path: <DECIDE: absolute path>
+    splits:
+      train: "train"
+      val: "val"
+    # Subset of long-tail scenarios for reasoning-heavy distillation.
+    long_tail_only: false
+
+  nuscenes:
+    enabled: <DECIDE: true | false>
+    path: <DECIDE: absolute path>
+    version: "v1.0-trainval"
+    # NuScenes uses 6 cameras; map to Alpamayo's 4-camera layout.
+    camera_mapping:
+      front_wide: "CAM_FRONT"
+      front_tele: "CAM_FRONT"  # synthesize tele crop or duplicate
+      cross_left: "CAM_FRONT_LEFT"
+      cross_right: "CAM_FRONT_RIGHT"
+
+  cavas_internal:
+    enabled: <DECIDE: true | false>
+    path: <DECIDE: absolute path>
+    # Custom CAVAS data — describe format if used.
+
+rollout:
+  # Phase 2 teacher rollout settings.
+  total_scenes: <DECIDE: target count, e.g. 100000>
+  validation_subset: 1000  # held out for eval
+  pipeline_validation_subset: 50  # for T2.3 sanity check
+
+  # Sharding for parallel rollout across machines.
+  num_shards: 1  # increase if running on multiple GPUs
+  shard_id: 0
+
+  cache_format: "hdf5"  # "hdf5" | "mmap_npy"
+  cache_dir: <DECIDE: absolute path with sufficient storage; estimate ~50KB/scene with topk=32>
+
+  # Determinism for reproducible rollouts.
+  seed: 42
+  teacher_sampling:
+    temperature: 0.0  # greedy for reproducibility; set >0 for diversity
+    top_p: 1.0
+
+dataloader:
+  # Used during student training stages.
+  batch_size_per_gpu: 4  # tune to fit on RTX 5080 — start small
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+  # Bucketed sampling by CoT sequence length to reduce padding waste.
+  bucket_by_length: true
+  bucket_boundaries: [64, 128, 256, 512, 1024]
+
+splits:
+  # How to partition rolled-out scenes for student training/eval.
+  train_fraction: 0.9
+  val_fraction: 0.05
+  test_fraction: 0.05
+  # Ensure scene-level split (not frame-level) to avoid leakage.
+  split_by: "scene_id"
+
+augmentation:
+  # Conservative — heavy augmentation breaks teacher correspondence.
+  enabled: false
+  # If enabled, only photometric augs; never geometric (would invalidate trajectory labels).
+  photometric:
+    brightness: 0.1
+    contrast: 0.1
+    saturation: 0.1

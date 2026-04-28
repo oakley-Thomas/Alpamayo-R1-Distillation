@@ -1,0 +1,120 @@
+# configs/distill.yaml
+# Distillation strategy and loss hyperparameters
+# Resolve all <DECIDE> markers before first training run.
+
+kd:
+  # DECIDED (H0.1): shared_tokenizer.
+  # Cosmos-Reason2 is built on Qwen3-VL, so Alpamayo-1.5's text tokenizer
+  # is the Qwen3 tokenizer — identical to the student backbone's tokenizer.
+  # Logit KD is valid with direct index alignment. No remapping needed.
+  vocab_strategy: "shared_tokenizer"
+
+  # Top-k logits cached per token from teacher.
+  # Tradeoff: higher k = better KL approximation, larger storage.
+  # 32 is empirically sufficient for ~95%+ probability mass in driving CoT.
+  topk: 32
+
+  # KD temperature. Higher = softer distributions, more transfer of dark knowledge.
+  # Standard range 2.0–4.0. Sweep this in ablations.
+  temperature: 2.0
+
+  # Whether to apply KD to CoT tokens, trajectory tokens, or both.
+  # Stage 1 typically uses cot_only; stages 3+ use both.
+  apply_to:
+    cot_tokens: true
+    trajectory_tokens: true
+
+  # Selective KD weighting (T4.4). Default uniform; enable in v2.
+  selective_weighting:
+    enabled: false
+    method: null  # "teacher_attention" | "trajectory_mi" | null
+    importance_floor: 0.1  # min weight for low-importance tokens
+
+  # Mask padding/special tokens from KL computation.
+  ignore_padding: true
+  ignore_eos: false
+
+losses:
+  # Combined loss: total = alpha*L_KD + beta*L_traj + gamma*L_GT
+  # Defaults are starting points; sweep in stage 3.
+  alpha_kd: 1.0
+  beta_trajectory: 1.0
+  gamma_groundtruth: 0.5
+
+  trajectory:
+    # Trajectory L2 in waypoint space (meters).
+    position_weight: 1.0
+    heading_weight: 0.1  # lambda_head
+    # Exponential decay over horizon — earlier waypoints matter more.
+    horizon_decay: 0.95
+    horizon_steps: 12  # 6 seconds at 2Hz
+    # Use Huber loss instead of L2 for robustness to outliers.
+    use_huber: true
+    huber_delta: 1.0
+
+  groundtruth:
+    metric: "minADE"  # "minADE" | "minFDE" | "ADE"
+    k: 1  # k=1 for deterministic, k=6 for multimodal sampling
+
+teacher:
+  model_id: "nvidia/Alpamayo-1.5-10B"
+  dtype: "bfloat16"
+  attn_implementation: "sdpa"  # fall back from flash-attn if Blackwell wheel missing
+  # Cached rollout location — populate after Phase 2.
+  rollout_cache_dir: <DECIDE: absolute path on cavas-skytech or shared storage>
+  # Capture hidden states at these layer indices for optional feature-KD.
+  # Empty list disables capture (saves storage).
+  capture_hidden_layers: []  # e.g., [10, 20, 30] for 32-layer backbone
+
+stages:
+  # Per-stage overrides applied on top of the base config.
+  stage1_warmup:
+    apply_to:
+      cot_tokens: true
+      trajectory_tokens: false
+    alpha_kd: 1.0
+    beta_trajectory: 0.0
+    gamma_groundtruth: 0.0
+    freeze:
+      - action_decoder
+    epochs: 1
+    lr: 5.0e-5
+    lr_full_unfreeze: 1.0e-5
+
+  stage2_action:
+    alpha_kd: 0.0
+    beta_trajectory: 1.0
+    gamma_groundtruth: 1.0
+    freeze:
+      - vision_encoder
+      - resampler
+      - llm_backbone
+    epochs: 2
+    lr: 1.0e-4
+
+  stage3_joint:
+    alpha_kd: 1.0
+    beta_trajectory: 1.0
+    gamma_groundtruth: 0.5
+    freeze: []  # all trainable
+    epochs: 3
+    lr: 1.0e-5
+    lr_schedule: "cosine"
+    warmup_steps: 500
+    grad_checkpointing: true
+
+  stage4_rl:
+    enabled: false  # H5.4 — default skip
+    # Populate if/when adopted; mirror Alpamayo-1.5's RL post-training reward setup.
+
+logging:
+  wandb_project: "alpamayo-distill"
+  wandb_entity: <DECIDE: your wandb entity or null for offline>
+  log_every_n_steps: 50
+  save_every_n_steps: 2000
+  eval_every_n_steps: 5000
+
+reproducibility:
+  seed: 42
+  deterministic: false  # set true for final runs; slows training
+  cudnn_benchmark: true
