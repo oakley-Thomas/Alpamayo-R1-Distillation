@@ -1,5 +1,34 @@
 # Alpamayo-R1 Action Prediction Distillation — Project Summary
 
+## Repository Status
+
+This repository now includes a working distillation scaffold aligned to `alpamayo_distillation_plan.md`.
+
+- `configs/` contains resolved student, data, and distillation configs, with `flow_matching` selected as the default action decoder for v1.
+- `src/alpamayo_distill/` contains the rollout scaffold, dataset loader, student VLA model, losses, evaluation helpers, and stage training entrypoints.
+- `tests/` contains synthetic rollout and forward/backward tests so the scaffold can be validated offline.
+- `scripts/` contains shell entrypoints for rollout, stage training, and test execution.
+
+The code is split into two layers:
+
+- A runnable local scaffold that uses stubbed teacher and backbone components for verification without external checkpoints.
+- Config hooks for the planned production stack using Alpamayo/Cosmos/Qwen models once those weights and dependencies are available on the target machine.
+
+## Quick Start
+
+```bash
+pip install -e .[dev]
+bash scripts/run_teacher_rollout.sh --num-scenes 4
+bash scripts/train_stage1.sh
+pytest -q
+```
+
+## Assumptions Captured In Code
+
+- `flow_matching` is the default `action_decoder.type` in `configs/student.yaml`.
+- Dataset and rollout cache paths default to local relative directories under `./data` and `./artifacts`.
+- The production Hugging Face backbone is represented in config, but the default implementation uses a stub provider so local tests do not require network access.
+
 ## Overview
 
 This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 10-billion parameter Vision-Language-Action (VLA) model for autonomous driving. The goal is to train a smaller "student" model that mimics the trajectory prediction behavior of the larger "teacher" model, then benchmark both to understand the performance trade-offs at lower compute cost.

@@ -1,0 +1,6 @@
+defaults:
+  student_config: "configs/student.yaml"
+  distill_config: "configs/distill.yaml"
+  data_config: "configs/data.yaml"
+
+stage: "stage2_action"

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpamayo-distill"
+version = "0.1.0"
+description = "Scaffold for Alpamayo teacher-student distillation experiments."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "torch>=2.4",
+]
+
+[project.optional-dependencies]
+train = [
+  "accelerate>=0.34",
+  "einops>=0.8",
+  "h5py>=3.11",
+  "hydra-core>=1.3",
+  "scipy>=1.14",
+  "transformers>=4.45",
+  "wandb>=0.18",
+]
+dev = [
+  "pytest>=8.3",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

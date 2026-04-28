@@ -1,0 +1,91 @@
+model_name: "alpamayo-student-v1"
+total_param_budget_billions: 3.0
+processor_id: "nvidia/Cosmos-Reason2-2B"
+
+vision_encoder:
+  source: "backbone"
+  siglip_name: "google/siglip-so400m-patch14-384"
+  freeze_until_stage: 3
+  input_resolution: [320, 576]
+  output_tokens_per_camera: 16
+  output_dim: 512
+
+resampler:
+  enabled: false
+  type: "qformer"
+  num_queries: 256
+  num_layers: 4
+  num_heads: 8
+  hidden_dim: 1024
+
+egomotion_encoder:
+  input_dim: 12
+  history_steps: 4
+  hidden_dim: 256
+  output_tokens: 4
+
+backbone:
+  name: "Qwen/Qwen3-VL-2B-Instruct"
+  provider: "stub"
+  dtype: "bfloat16"
+  attn_implementation: "sdpa"
+  hidden_dim: 512
+  num_layers: 6
+  num_heads: 8
+  max_position_embeddings: 4096
+  vocab_size: 4096
+  use_lora: true
+  lora:
+    r: 32
+    alpha: 64
+    dropout: 0.05
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  gradient_checkpointing: true
+
+action_decoder:
+  type: "flow_matching"
+  flow_matching:
+    num_sampling_steps: 4
+    hidden_dim: 512
+    num_layers: 4
+    num_heads: 8
+    dit_style: true
+  mlp_codebook:
+    codebook_size: 1024
+    codebook_path: null
+    residual_mlp_layers: 3
+    residual_mlp_hidden: 512
+  consistency:
+    teacher_diffusion_steps: 50
+    student_steps: 1
+    distill_method: "consistency_training"
+  output:
+    horizon_seconds: 6.0
+    waypoints_per_second: 2
+    fields: ["x", "y", "heading"]
+
+inference:
+  target_p50_ms: 30
+  target_p95_ms: 50
+  precision: "fp16"
+  compile_mode: "reduce-overhead"
+  kv_cache: true
+  max_cot_tokens: 128
+  cot_sampling:
+    temperature: 0.7
+    top_p: 0.9
+    repetition_penalty: 1.05
+
+training_data_contract:
+  required_fields:
+    - "scene_id"
+    - "cameras"
+    - "egomotion"
+    - "teacher_tokens"
+    - "teacher_topk_logits"
+    - "teacher_topk_indices"
+    - "teacher_trajectory"
+    - "groundtruth_trajectory"
+  optional_fields:
+    - "teacher_hidden_states"
+    - "scene_metadata"

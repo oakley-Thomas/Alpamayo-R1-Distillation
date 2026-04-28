@@ -1,0 +1,79 @@
+kd:
+  vocab_strategy: "shared_tokenizer"
+  topk: 32
+  temperature: 2.0
+  apply_to:
+    cot_tokens: true
+    trajectory_tokens: true
+  selective_weighting:
+    enabled: false
+    method: null
+    importance_floor: 0.1
+  ignore_padding: true
+  ignore_eos: false
+
+losses:
+  alpha_kd: 1.0
+  beta_trajectory: 1.0
+  gamma_groundtruth: 0.5
+  trajectory:
+    position_weight: 1.0
+    heading_weight: 0.1
+    horizon_decay: 0.95
+    horizon_steps: 12
+    use_huber: true
+    huber_delta: 1.0
+  groundtruth:
+    metric: "minADE"
+    k: 1
+
+teacher:
+  model_id: "nvidia/Alpamayo-1.5-10B"
+  dtype: "bfloat16"
+  attn_implementation: "sdpa"
+  rollout_cache_dir: "./artifacts/teacher_rollouts"
+  capture_hidden_layers: []
+
+stages:
+  stage1_warmup:
+    apply_to:
+      cot_tokens: true
+      trajectory_tokens: false
+    alpha_kd: 1.0
+    beta_trajectory: 0.0
+    gamma_groundtruth: 0.0
+    freeze: ["action_decoder"]
+    epochs: 1
+    lr: 5.0e-5
+    lr_full_unfreeze: 1.0e-5
+  stage2_action:
+    alpha_kd: 0.0
+    beta_trajectory: 1.0
+    gamma_groundtruth: 1.0
+    freeze: ["vision_encoder", "resampler", "llm_backbone"]
+    epochs: 2
+    lr: 1.0e-4
+  stage3_joint:
+    alpha_kd: 1.0
+    beta_trajectory: 1.0
+    gamma_groundtruth: 0.5
+    freeze: []
+    epochs: 3
+    lr: 1.0e-5
+    lr_schedule: "cosine"
+    warmup_steps: 500
+    grad_checkpointing: true
+  stage4_rl:
+    enabled: false
+
+logging:
+  wandb_project: "alpamayo-distill"
+  wandb_entity: null
+  log_every_n_steps: 50
+  save_every_n_steps: 2000
+  eval_every_n_steps: 5000
+
+reproducibility:
+  seed: 42
+  deterministic: false
+  cudnn_benchmark: true

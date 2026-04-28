@@ -1,0 +1,55 @@
+datasets:
+  nvidia_physical_ai:
+    enabled: true
+    path: "./data/nvidia_physical_ai"
+    splits:
+      train: "train"
+      val: "val"
+    long_tail_only: false
+  nuscenes:
+    enabled: false
+    path: "./data/nuscenes"
+    version: "v1.0-trainval"
+    camera_mapping:
+      front_wide: "CAM_FRONT"
+      front_tele: "CAM_FRONT"
+      cross_left: "CAM_FRONT_LEFT"
+      cross_right: "CAM_FRONT_RIGHT"
+  cavas_internal:
+    enabled: false
+    path: "./data/cavas_internal"
+
+rollout:
+  total_scenes: 10000
+  validation_subset: 1000
+  pipeline_validation_subset: 50
+  num_shards: 1
+  shard_id: 0
+  cache_format: "mmap_npy"
+  cache_dir: "./artifacts/teacher_rollouts"
+  seed: 42
+  teacher_sampling:
+    temperature: 0.0
+    top_p: 1.0
+
+dataloader:
+  batch_size_per_gpu: 4
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  bucket_by_length: true
+  bucket_boundaries: [64, 128, 256, 512, 1024]
+
+splits:
+  train_fraction: 0.9
+  val_fraction: 0.05
+  test_fraction: 0.05
+  split_by: "scene_id"
+
+augmentation:
+  enabled: false
+  photometric:
+    brightness: 0.1
+    contrast: 0.1
+    saturation: 0.1
