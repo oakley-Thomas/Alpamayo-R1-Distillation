@@ -6,10 +6,17 @@ from statistics import mean
 import torch
 
 
-def benchmark_latency(model, batch: dict[str, torch.Tensor], iterations: int = 10) -> dict[str, float]:
+def benchmark_latency(
+    model,
+    batch: dict[str, torch.Tensor],
+    iterations: int = 100,
+    warmup_iterations: int = 10,
+) -> dict[str, float]:
     samples = []
     model.eval()
     with torch.no_grad():
+        for _ in range(warmup_iterations):
+            model(batch)
         for _ in range(iterations):
             start = time.perf_counter()
             model(batch)

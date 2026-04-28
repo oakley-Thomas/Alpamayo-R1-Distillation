@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import torch
 from torch.utils.data import DataLoader
@@ -76,3 +77,10 @@ def run_single_epoch(model: StudentVLA, cfg: dict, dataloader: DataLoader, lr: f
             running[key] += float(losses[key].detach().item())
     steps = len(dataloader)
     return {key: value / steps for key, value in running.items()}
+
+
+def save_stage_artifacts(model: StudentVLA, stage_name: str, metrics: dict[str, float], root: str = "ckpts") -> None:
+    out_dir = Path(root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), out_dir / f"{stage_name}.pt")
+    (out_dir / f"{stage_name}.metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")

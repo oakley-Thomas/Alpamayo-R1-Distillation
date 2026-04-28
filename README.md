@@ -19,7 +19,11 @@ The code is split into two layers:
 ```bash
 pip install -e .[dev]
 bash scripts/run_teacher_rollout.sh --num-scenes 4
+bash scripts/validate_rollout.sh
 bash scripts/train_stage1.sh
+bash scripts/eval_open_loop.sh --max-batches 1
+bash scripts/benchmark_latency.sh --iterations 20 --warmup 5
+bash scripts/run_inference_example.sh
 pytest -q
 ```
 
@@ -28,6 +32,13 @@ pytest -q
 - `flow_matching` is the default `action_decoder.type` in `configs/student.yaml`.
 - Dataset and rollout cache paths default to local relative directories under `./data` and `./artifacts`.
 - The production Hugging Face backbone is represented in config, but the default implementation uses a stub provider so local tests do not require network access.
+
+## Additional Entry Points
+
+- `bash scripts/validate_rollout.sh` checks cache readability, approximate top-k mass, and per-scene storage size.
+- `bash scripts/eval_open_loop.sh` evaluates student and cached teacher trajectories against ground truth and reports student/teacher ratios.
+- `bash scripts/benchmark_latency.sh` runs warmup and timed forward passes on the current student.
+- `bash scripts/run_inference_example.sh` writes one example prediction to `artifacts/example_prediction.json`.
 
 ## Overview
 

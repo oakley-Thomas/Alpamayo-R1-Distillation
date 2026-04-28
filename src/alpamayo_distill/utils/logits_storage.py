@@ -28,6 +28,8 @@ def scene_checksum(payload: dict[str, Any]) -> int:
 
 
 class LogitsStorage:
+    FORMAT_VERSION = 1
+
     def __init__(self, root: str | Path, fmt: str = "hdf5", scale: float = 1000.0) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -36,6 +38,7 @@ class LogitsStorage:
 
     def write_scene(self, scene_id: str, payload: dict[str, Any]) -> Path:
         payload = dict(payload)
+        payload["format_version"] = self.FORMAT_VERSION
         payload["checksum"] = scene_checksum(payload)
         if self.fmt == "hdf5":
             return self._write_hdf5(scene_id, payload)
@@ -91,6 +94,7 @@ class LogitsStorage:
                         payload[key] = value
                 else:
                     payload[key] = value
+        self._validate_format_version(payload, path)
         return payload
 
     def _read_npz(self, path: Path) -> dict[str, Any]:
@@ -100,4 +104,13 @@ class LogitsStorage:
             for key in archive.files:
                 if key != "_metadata_json":
                     payload[key] = archive[key]
+        self._validate_format_version(payload, path)
         return payload
+
+    def _validate_format_version(self, payload: dict[str, Any], path: Path) -> None:
+        version = int(payload.get("format_version", -1))
+        if version != self.FORMAT_VERSION:
+            raise RuntimeError(
+                f"Unsupported rollout cache format version {version} in {path}; "
+                f"expected {self.FORMAT_VERSION}. Regenerate the rollout cache."
+            )

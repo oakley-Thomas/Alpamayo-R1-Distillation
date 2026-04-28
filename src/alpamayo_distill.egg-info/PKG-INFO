@@ -1,0 +1,124 @@
+Metadata-Version: 2.4
+Name: alpamayo-distill
+Version: 0.1.0
+Summary: Scaffold for Alpamayo teacher-student distillation experiments.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: torch>=2.4
+Provides-Extra: train
+Requires-Dist: accelerate>=0.34; extra == "train"
+Requires-Dist: einops>=0.8; extra == "train"
+Requires-Dist: h5py>=3.11; extra == "train"
+Requires-Dist: hydra-core>=1.3; extra == "train"
+Requires-Dist: scipy>=1.14; extra == "train"
+Requires-Dist: transformers>=4.45; extra == "train"
+Requires-Dist: wandb>=0.18; extra == "train"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3; extra == "dev"
+
+# Alpamayo-R1 Action Prediction Distillation — Project Summary
+
+## Repository Status
+
+This repository now includes a working distillation scaffold aligned to `alpamayo_distillation_plan.md`.
+
+- `configs/` contains resolved student, data, and distillation configs, with `flow_matching` selected as the default action decoder for v1.
+- `src/alpamayo_distill/` contains the rollout scaffold, dataset loader, student VLA model, losses, evaluation helpers, and stage training entrypoints.
+- `tests/` contains synthetic rollout and forward/backward tests so the scaffold can be validated offline.
+- `scripts/` contains shell entrypoints for rollout, stage training, and test execution.
+
+The code is split into two layers:
+
+- A runnable local scaffold that uses stubbed teacher and backbone components for verification without external checkpoints.
+- Config hooks for the planned production stack using Alpamayo/Cosmos/Qwen models once those weights and dependencies are available on the target machine.
+
+## Quick Start
+
+```bash
+pip install -e .[dev]
+bash scripts/run_teacher_rollout.sh --num-scenes 4
+bash scripts/train_stage1.sh
+pytest -q
+```
+
+## Assumptions Captured In Code
+
+- `flow_matching` is the default `action_decoder.type` in `configs/student.yaml`.
+- Dataset and rollout cache paths default to local relative directories under `./data` and `./artifacts`.
+- The production Hugging Face backbone is represented in config, but the default implementation uses a stub provider so local tests do not require network access.
+
+## Overview
+
+This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 10-billion parameter Vision-Language-Action (VLA) model for autonomous driving. The goal is to train a smaller "student" model that mimics the trajectory prediction behavior of the larger "teacher" model, then benchmark both to understand the performance trade-offs at lower compute cost.
+---
+
+## Background
+
+**Alpamayo-R1** is NVIDIA's open-source VLA model that uses chain-of-thought reasoning to predict driving trajectories from camera input. It is built on a Cosmos Reason backbone (8.2B parameters) plus a 2.3B action expert, requiring at least 24 GB VRAM to run.
+
+**AlpaSim** is NVIDIA's companion open-source simulation framework for evaluating AV policies in a closed-loop reactive environment.
+
+**Knowledge Distillation** is a model compression technique where a smaller "student" model is trained to mimic the outputs of a larger "teacher" model, rather than learning from raw ground truth labels alone.
+
+---
+
+## Project Scope
+
+- **Scope:** Action prediction distillation only (chain-of-thought reasoning distillation is out of scope for this prototype)
+- **Dataset:** Subset of the [NVIDIA Physical AI Open Dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles) (~100 driving clips)
+- **Teacher:** Alpamayo-R1 (10B parameters)
+- **Student:** Smaller transformer model (target: 2B–4B parameters)
+- **Evaluation:** Open-loop benchmark — compare teacher vs. student trajectory predictions against ground truth using **minADE** and **RMSE**
+
+---
+
+## Plan
+
+### Step 1 — Setup & Baseline Profiling
+- Clone [Alpamayo GitHub repo](https://github.com/NVlabs/alpamayo) and load model from HuggingFace
+- Run teacher inference on ~100 clips from the physical AI dataset
+- Profile teacher: inference latency, VRAM usage, trajectory prediction quality
+- Establish baseline metrics (minADE, RMSE)
+
+### Step 2 - Student Architecture & Distillation Pipeline
+- Select student model architecture (2B–4B parameter transformer)
+- Implement distillation training loop:
+  - KL divergence loss on teacher trajectory logits (soft targets)
+  - Cross-entropy loss on ground truth trajectories (hard targets)
+- Set up data loading and training infrastructure
+- Launch first training run
+
+### Step 3 — Training & Iteration
+- Iteratively tune distillation temperature, learning rate, batch size
+- Train student model to convergence on dataset subset
+- Evaluate intermediate checkpoints against teacher performance
+- Identify sweet spot between model size and trajectory accuracy
+
+### Step 4 — Evaluation & Writeup
+- Benchmark teacher vs. student on held-out test clips
+- Measure: trajectory error (minADE, RMSE), inference speed, memory footprint
+- Produce comparison table and analysis
+- Write up findings: what performance is lost at each compression ratio?
+
+---
+
+## Key References
+
+- [*"Distilling Alpamayo-R1: What I learned making a 10-Billion parameter VLA model 20x smaller"*](https://substack.com/home/post/p-186795679)
+- [Alpamayo GitHub](https://github.com/NVlabs/alpamayo)
+- [AlpaSim GitHub](https://github.com/NVlabs/alpasim)
+- [Alpamayo-R1 on HuggingFace](https://huggingface.co/nvidia/Alpamayo-R1-10B)
+- [NVIDIA Physical AI Dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles)
+- [NVIDIA Alpamayo Developer Page](https://developer.nvidia.com/drive/alpamayo)
+
+---
+
+## Stretch Goal (Time Permitting)
+
+If action prediction distillation is completed ahead of schedule, explore **reasoning distillation** — training the student to also reproduce Alpamayo's chain-of-thought reasoning traces alongside trajectory predictions. This is a novel contribution not yet addressed in the existing literature.
+
+---
+
+*Project by Oakley Thomas and Harshvardhan Shinde | CSE676 — University at Buffalo | Spring 2026*
