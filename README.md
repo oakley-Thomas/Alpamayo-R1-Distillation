@@ -4,15 +4,15 @@
 
 This repository now includes a working distillation scaffold aligned to `alpamayo_distillation_plan.md`.
 
-- `configs/` contains resolved student, data, and distillation configs, with `flow_matching` selected as the default action decoder for v1.
+- `configs/` contains resolved student, data, and distillation configs, with `flow_matching` selected as the default action decoder for v1 and `nvidia-physical-ai` treated as the primary dataset.
 - `src/alpamayo_distill/` contains the rollout scaffold, dataset loader, student VLA model, losses, evaluation helpers, and stage training entrypoints.
 - `tests/` contains synthetic rollout and forward/backward tests so the scaffold can be validated offline.
 - `scripts/` contains shell entrypoints for rollout, stage training, and test execution.
 
 The code is split into two layers:
 
-- A runnable local scaffold that uses stubbed teacher and backbone components for verification without external checkpoints.
-- Config hooks for the planned production stack using Alpamayo/Cosmos/Qwen models once those weights and dependencies are available on the target machine.
+- A default `transformers` path that loads the real Cosmos/Qwen processor and Qwen3-VL backbone.
+- A stub fallback path retained for tests and offline smoke runs.
 
 ## Quick Start
 
@@ -30,8 +30,10 @@ pytest -q
 ## Assumptions Captured In Code
 
 - `flow_matching` is the default `action_decoder.type` in `configs/student.yaml`.
+- The canonical dataset is `nvidia-physical-ai`, configured in [configs/data.yaml](/home/oakley/ub/Alpamayo-R1-Distillation/configs/data.yaml).
+- Teacher rollout is assumed to run on a Quadro RTX 8000 and that assumption is recorded in config.
 - Dataset and rollout cache paths default to local relative directories under `./data` and `./artifacts`.
-- The production Hugging Face backbone is represented in config, but the default implementation uses a stub provider so local tests do not require network access.
+- The default student config now uses the real `transformers` processor/backbone path; tests still force the stub path.
 
 ## Additional Entry Points
 
@@ -49,8 +51,6 @@ This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 
 
 **Alpamayo-R1** is NVIDIA's open-source VLA model that uses chain-of-thought reasoning to predict driving trajectories from camera input. It is built on a Cosmos Reason backbone (8.2B parameters) plus a 2.3B action expert, requiring at least 24 GB VRAM to run.
 
-**AlpaSim** is NVIDIA's companion open-source simulation framework for evaluating AV policies in a closed-loop reactive environment.
-
 **Knowledge Distillation** is a model compression technique where a smaller "student" model is trained to mimic the outputs of a larger "teacher" model, rather than learning from raw ground truth labels alone.
 
 ---
@@ -58,10 +58,11 @@ This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 
 ## Project Scope
 
 - **Scope:** Action prediction distillation only (chain-of-thought reasoning distillation is out of scope for this prototype)
-- **Dataset:** Subset of the [NVIDIA Physical AI Open Dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles) (~100 driving clips)
+- **Dataset:** [NVIDIA Physical AI Open Dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles)
 - **Teacher:** Alpamayo-R1 (10B parameters)
 - **Student:** Smaller transformer model (target: 2B–4B parameters)
 - **Evaluation:** Open-loop benchmark — compare teacher vs. student trajectory predictions against ground truth using **minADE** and **RMSE**
+- **Closed-loop simulation:** Out of scope for this project
 
 ---
 
@@ -99,7 +100,6 @@ This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 
 
 - [*"Distilling Alpamayo-R1: What I learned making a 10-Billion parameter VLA model 20x smaller"*](https://substack.com/home/post/p-186795679)
 - [Alpamayo GitHub](https://github.com/NVlabs/alpamayo)
-- [AlpaSim GitHub](https://github.com/NVlabs/alpasim)
 - [Alpamayo-R1 on HuggingFace](https://huggingface.co/nvidia/Alpamayo-R1-10B)
 - [NVIDIA Physical AI Dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles)
 - [NVIDIA Alpamayo Developer Page](https://developer.nvidia.com/drive/alpamayo)

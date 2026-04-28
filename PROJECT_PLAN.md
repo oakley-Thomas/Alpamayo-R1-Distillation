@@ -18,10 +18,11 @@ This project explores **knowledge distillation** of NVIDIA's **Alpamayo-R1**, a 
 ## Project Scope
 
 - **Scope:** Action prediction distillation only (chain-of-thought reasoning distillation is out of scope for this prototype)
-- **Dataset:** Subset of the [NVIDIA Physical AI Open Dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles) (~100 driving clips)
+- **Dataset:** [NVIDIA Physical AI Open Dataset](https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles)
 - **Teacher:** Alpamayo-R1 (10B parameters)
 - **Student:** Smaller transformer model (target: 2B–4B parameters)
 - **Evaluation:** Open-loop benchmark — compare teacher vs. student trajectory predictions against ground truth using **minADE** and **RMSE**
+- **Closed-loop simulation:** Out of scope for this project
 
 ---
 

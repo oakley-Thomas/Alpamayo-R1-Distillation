@@ -31,6 +31,7 @@ teacher:
   model_id: "nvidia/Alpamayo-1.5-10B"
   dtype: "bfloat16"
   attn_implementation: "sdpa"
+  rollout_machine: "Quadro RTX 8000"
   rollout_cache_dir: "./artifacts/teacher_rollouts"
   capture_hidden_layers: []
 

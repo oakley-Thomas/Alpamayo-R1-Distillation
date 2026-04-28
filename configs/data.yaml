@@ -20,6 +20,8 @@ datasets:
     path: "./data/cavas_internal"
 
 rollout:
+  source_dataset: "nvidia_physical_ai"
+  teacher_machine: "Quadro RTX 8000"
   total_scenes: 10000
   validation_subset: 1000
   pipeline_validation_subset: 50

@@ -1,6 +1,10 @@
 model_name: "alpamayo-student-v1"
 total_param_budget_billions: 3.0
 processor_id: "nvidia/Cosmos-Reason2-2B"
+processor:
+  provider: "transformers"
+  local_files_only: false
+  trust_remote_code: false
 
 vision_encoder:
   source: "backbone"
@@ -26,7 +30,10 @@ egomotion_encoder:
 
 backbone:
   name: "Qwen/Qwen3-VL-2B-Instruct"
-  provider: "stub"
+  provider: "transformers"
+  pretrained: true
+  local_files_only: false
+  trust_remote_code: false
   dtype: "bfloat16"
   attn_implementation: "sdpa"
   hidden_dim: 512

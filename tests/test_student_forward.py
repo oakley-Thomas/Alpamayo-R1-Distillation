@@ -13,6 +13,8 @@ class StudentForwardTest(unittest.TestCase):
     def test_student_forward_backward(self) -> None:
         cfg = load_yaml("configs/student.yaml")
         distill_cfg = load_yaml("configs/distill.yaml")
+        cfg["processor"]["provider"] = "stub"
+        cfg["backbone"]["provider"] = "stub"
         model = StudentVLA(cfg)
         batch = {
             "cameras": torch.randn(2, 4, 4, 3, 320, 576),
