@@ -31,7 +31,7 @@ def test_coc_top1_agreement_uses_valid_tokens() -> None:
 def test_hidden_cosine_similarity_is_one_for_equal_tensors() -> None:
     hidden = torch.randn(1, 2, 4)
     mask = torch.ones((1, 2), dtype=torch.bool)
-    assert hidden_cosine_similarity(hidden, hidden.clone(), mask).item() == 1.0
+    assert torch.allclose(hidden_cosine_similarity(hidden, hidden.clone(), mask), torch.tensor(1.0))
 
 
 def test_trace_parseability_accepts_text_and_rejects_bad_json() -> None:
