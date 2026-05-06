@@ -12,6 +12,7 @@ DOCKER_SCRIPTS = [
     "fix.sh",
     "validate_dump.sh",
     "train_stage2.sh",
+    "eval_stage2.sh",
     "export_teacher_dump.sh",
 ]
 

@@ -2,23 +2,36 @@
 
 from __future__ import annotations
 
+import importlib
+import json
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 import numpy as np
 import torch
 import yaml
+from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader
 
 from src.data.teacher_dump import TeacherDumpDataset, collate_teacher_examples
 from src.losses.stage2 import Stage2LossConfig, compute_stage2_loss
 from src.models.student_vlm import StudentVLM, StudentVLMConfig
+from src.models.teacher_iface import build_stage2_replay_masks
 from src.train.config import Stage2Config, load_stage2_config
 from src.utils.seed import set_seed
+
+
+class Stage2Processor(Protocol):
+    """Runtime protocol for Hugging Face processors used by Stage 2."""
+
+    def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any) -> str: ...
+
+    def __call__(self, **kwargs: Any) -> Mapping[str, Any]: ...
 
 
 def _run_text_command(args: list[str]) -> str:
@@ -92,11 +105,218 @@ def build_stage2_model(config: Stage2Config, teacher_hidden_dim: int) -> Student
     )
 
 
+def build_stage2_processor(config: Stage2Config) -> Stage2Processor:
+    """Load the Hugging Face processor that turns dump frames into VLM tensors."""
+    try:
+        transformers = importlib.import_module("transformers")
+        auto_processor = transformers.AutoProcessor
+    except ImportError as exc:
+        raise RuntimeError("Stage 2 image preparation requires transformers.AutoProcessor") from exc
+    processor = auto_processor.from_pretrained(config.model.processor_name)
+    return cast(Stage2Processor, processor)
+
+
+def _load_rgb_frame(path: Path) -> Image.Image:
+    with Image.open(path) as image:
+        return image.convert("RGB")
+
+
+def _select_frame_paths(frame_paths: list[Path], max_frames: int) -> list[Path]:
+    if max_frames <= 0:
+        raise ValueError("Stage 2 max_frames must be positive")
+    if len(frame_paths) <= max_frames:
+        return frame_paths
+    return frame_paths[:max_frames]
+
+
+def _processor_outputs_for_example(
+    processor: Stage2Processor,
+    frame_paths: list[Path],
+    prompt: str,
+    max_frames: int,
+) -> dict[str, torch.Tensor]:
+    selected_paths = _select_frame_paths(frame_paths, max_frames)
+    images = [_load_rgb_frame(path) for path in selected_paths]
+    content: list[dict[str, Any]] = [{"type": "image", "image": image} for image in images]
+    content.append({"type": "text", "text": prompt})
+    messages = [{"role": "user", "content": content}]
+    text = processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    raw_outputs = processor(
+        text=[text],
+        images=images,
+        padding=True,
+        return_tensors="pt",
+    )
+    outputs: dict[str, torch.Tensor] = {}
+    for key, value in raw_outputs.items():
+        if isinstance(value, torch.Tensor):
+            outputs[key] = value
+    if "input_ids" not in outputs:
+        raise RuntimeError("Stage 2 processor did not return input_ids")
+    if "attention_mask" not in outputs:
+        outputs["attention_mask"] = torch.ones_like(outputs["input_ids"])
+    return outputs
+
+
+def _conditioning_meta_at(batch: Mapping[str, Any], batch_idx: int) -> Mapping[str, Any] | None:
+    metas = batch.get("conditioning_meta")
+    if not isinstance(metas, list):
+        return None
+    metas_list = cast(list[object], metas)
+    meta = metas_list[batch_idx]
+    if meta is None:
+        return None
+    if not isinstance(meta, dict):
+        raise TypeError("conditioning_meta entries must be mappings or None")
+    return cast(Mapping[str, Any], meta)
+
+
+def _batch_frame_paths_at(batch: Mapping[str, Any], batch_idx: int) -> list[Path]:
+    frame_path_batches = batch.get("frame_paths")
+    if not isinstance(frame_path_batches, list):
+        raise TypeError("batch frame_paths must be a list")
+    frame_path_batches_list = cast(list[object], frame_path_batches)
+    frame_paths = frame_path_batches_list[batch_idx]
+    if not isinstance(frame_paths, list):
+        raise TypeError("each batch frame_paths entry must be a list")
+    paths = cast(list[object], frame_paths)
+    if not all(isinstance(path, (str, Path)) for path in paths):
+        raise TypeError("frame path entries must be strings or Paths")
+    return [Path(path) for path in paths if isinstance(path, (str, Path))]
+
+
+def prepare_stage2_model_inputs(
+    batch: Mapping[str, Any],
+    config: Stage2Config,
+    device: torch.device,
+    processor: Stage2Processor | None,
+) -> dict[str, Any]:
+    """Build student VLM inputs and alignment masks for one Stage 2 batch.
+
+    The trainer uses batch size 1 because each clip carries a variable number
+    of video frames. This function still returns batched tensors so the model
+    path remains the same as the test path.
+    """
+    token_ids = batch["token_ids"]
+    token_mask = batch["token_mask"]
+    hidden_mask = batch["hidden_mask"]
+    if not isinstance(token_ids, torch.Tensor):
+        raise TypeError("batch token_ids must be a tensor")
+    if not isinstance(token_mask, torch.Tensor):
+        raise TypeError("batch token_mask must be a tensor")
+    if not isinstance(hidden_mask, torch.Tensor):
+        raise TypeError("batch hidden_mask must be a tensor")
+    if token_ids.shape[0] != 1:
+        raise ValueError("Stage 2 VLM input preparation expects one clip per batch")
+
+    valid_tokens = token_ids[0][token_mask[0]]
+    if processor is None:
+        input_ids = valid_tokens.unsqueeze(0)
+        attention_mask = torch.ones_like(input_ids)
+        model_kwargs: dict[str, torch.Tensor] = {}
+    else:
+        processor_outputs = _processor_outputs_for_example(
+            processor=processor,
+            frame_paths=_batch_frame_paths_at(batch, 0),
+            prompt=config.data.image_prompt,
+            max_frames=config.data.max_frames,
+        )
+        prompt_input_ids = processor_outputs.pop("input_ids")
+        prompt_attention_mask = processor_outputs.pop("attention_mask")
+        generated_attention_mask = torch.ones((1, valid_tokens.shape[0]), dtype=torch.long)
+        input_ids = torch.cat([prompt_input_ids, valid_tokens.unsqueeze(0)], dim=1)
+        attention_mask = torch.cat([prompt_attention_mask, generated_attention_mask], dim=1)
+        model_kwargs = processor_outputs
+
+    masks = build_stage2_replay_masks(
+        sequence_length=int(input_ids.shape[1]),
+        token_count=int(token_mask[0].sum().item()),
+        teacher_hidden_length=int(hidden_mask[0].sum().item()),
+        conditioning_meta=_conditioning_meta_at(batch, 0),
+    )
+    return {
+        "input_ids": input_ids.to(device),
+        "attention_mask": attention_mask.to(device),
+        "hidden_position_mask": masks.hidden_position_mask.unsqueeze(0).to(device),
+        "logit_position_mask": masks.logit_position_mask.unsqueeze(0).to(device),
+        "model_kwargs": {key: value.to(device) for key, value in model_kwargs.items()},
+    }
+
+
+def save_stage2_artifacts(model: StudentVLM, output_dir: str | Path) -> None:
+    """Save the LoRA-backed VLM adapter and hidden-state adapter bundle."""
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    save_pretrained = getattr(model.backbone, "save_pretrained", None)
+    if callable(save_pretrained):
+        save_pretrained(destination / "lora_adapter")
+    else:
+        torch.save(model.backbone.state_dict(), destination / "backbone_state.pt")
+    torch.save(model.hidden_adapter.state_dict(), destination / "hidden_adapter.pt")
+    metadata = {
+        "format": "stage2_student_vlm",
+        "contains": ["lora_adapter", "hidden_adapter"],
+    }
+    (destination / "metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_stage2_artifacts(model: StudentVLM, output_dir: str | Path) -> None:
+    """Load a saved Stage 2 LoRA adapter and hidden-state adapter bundle.
+
+    Args:
+        model: Fresh Stage 2 student with the same backbone and adapter dims.
+        output_dir: Directory produced by :func:`save_stage2_artifacts`.
+
+    Raises:
+        FileNotFoundError: If required adapter files are missing.
+        RuntimeError: If a LoRA adapter exists but the backbone cannot load it.
+    """
+    source = Path(output_dir)
+    hidden_adapter_path = source / "hidden_adapter.pt"
+    if not hidden_adapter_path.is_file():
+        raise FileNotFoundError(f"missing Stage 2 hidden adapter: {hidden_adapter_path}")
+
+    state_obj = torch.load(hidden_adapter_path, map_location="cpu")
+    if not isinstance(state_obj, dict):
+        raise RuntimeError(f"{hidden_adapter_path} did not contain a state dict")
+    model.hidden_adapter.load_state_dict(cast(dict[str, torch.Tensor], state_obj))
+
+    lora_dir = source / "lora_adapter"
+    if lora_dir.is_dir():
+        load_adapter = getattr(model.backbone, "load_adapter", None)
+        if not callable(load_adapter):
+            raise RuntimeError("saved LoRA adapter exists but backbone cannot load adapters")
+        load_adapter(str(lora_dir), adapter_name="stage2", is_trainable=False)
+        set_adapter = getattr(model.backbone, "set_adapter", None)
+        if callable(set_adapter):
+            set_adapter("stage2")
+        return
+
+    backbone_state_path = source / "backbone_state.pt"
+    if backbone_state_path.is_file():
+        backbone_state_obj = torch.load(backbone_state_path, map_location="cpu")
+        if not isinstance(backbone_state_obj, dict):
+            raise RuntimeError(f"{backbone_state_path} did not contain a state dict")
+        model.backbone.load_state_dict(cast(dict[str, torch.Tensor], backbone_state_obj))
+        return
+
+    raise FileNotFoundError(f"missing Stage 2 LoRA adapter or backbone state under {source}")
+
+
 def cache_student_hidden_states(
     model: StudentVLM,
     dataset: TeacherDumpDataset,
     output_dir: str | Path,
     device: torch.device,
+    config: Stage2Config,
+    processor: Stage2Processor | None,
 ) -> None:
     """Write adapted student hidden states for every clip in a dataset.
 
@@ -105,14 +325,23 @@ def cache_student_hidden_states(
         dataset: Teacher dump dataset whose token IDs drive the replay.
         output_dir: Destination for ``<clip_id>.npy`` cache files.
         device: Device used for model inference.
+        config: Stage 2 config controlling image preparation.
+        processor: Optional processor for frame-backed VLM inputs.
     """
     cache_dir = Path(output_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     model.eval()
     with torch.no_grad():
         for example in dataset:
-            token_ids = example["token_ids"].unsqueeze(0).to(device)
-            outputs = model(input_ids=token_ids)
+            batch = collate_teacher_examples([example])
+            prepared = prepare_stage2_model_inputs(batch, config, device, processor)
+            outputs = model(
+                input_ids=prepared["input_ids"],
+                attention_mask=prepared["attention_mask"],
+                hidden_position_mask=prepared["hidden_position_mask"],
+                logit_position_mask=prepared["logit_position_mask"],
+                **prepared["model_kwargs"],
+            )
             hidden = outputs.adapted_hidden_states.squeeze(0).detach().cpu().to(torch.float16)
             np.save(cache_dir / f"{example['clip_id']}.npy", hidden.numpy())
 
@@ -138,6 +367,7 @@ def run_stage2_training(config_path: str | Path) -> None:
     )
     teacher_hidden_dim = config.model.teacher_hidden_dim or _infer_teacher_hidden_dim(train_dataset)
     model = build_stage2_model(config, teacher_hidden_dim=teacher_hidden_dim).to(device)
+    processor = build_stage2_processor(config)
     optimizer = build_stage2_optimizer(model, config)
     loss_config = Stage2LossConfig(
         alpha=config.loss.alpha,
@@ -161,7 +391,14 @@ def run_stage2_training(config_path: str | Path) -> None:
                 for key, value in batch.items()
                 if isinstance(value, torch.Tensor)
             }
-            outputs = model(input_ids=tensor_batch["token_ids"])
+            prepared = prepare_stage2_model_inputs(batch, config, device, processor)
+            outputs = model(
+                input_ids=prepared["input_ids"],
+                attention_mask=prepared["attention_mask"],
+                hidden_position_mask=prepared["hidden_position_mask"],
+                logit_position_mask=prepared["logit_position_mask"],
+                **prepared["model_kwargs"],
+            )
             loss: torch.Tensor = compute_stage2_loss(tensor_batch, outputs, loss_config).total
             scaled_loss: torch.Tensor = loss / config.training.gradient_accumulation_steps
             torch.autograd.backward([scaled_loss])
@@ -169,9 +406,18 @@ def run_stage2_training(config_path: str | Path) -> None:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
-    cache_dataset = TeacherDumpDataset(
-        root=config.data.teacher_dump_root,
-        split_file=config.data.val_split,
-        include_kv_cache=config.data.include_kv_cache,
-    )
-    cache_student_hidden_states(model, cache_dataset, config.outputs.hidden_cache_dir, device)
+    save_stage2_artifacts(model, config.outputs.student_vlm_dir)
+    for split_file in (config.data.train_split, config.data.val_split, config.data.test_split):
+        cache_dataset = TeacherDumpDataset(
+            root=config.data.teacher_dump_root,
+            split_file=split_file,
+            include_kv_cache=config.data.include_kv_cache,
+        )
+        cache_student_hidden_states(
+            model,
+            cache_dataset,
+            config.outputs.hidden_cache_dir,
+            device,
+            config,
+            processor,
+        )

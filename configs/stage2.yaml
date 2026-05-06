@@ -2,9 +2,13 @@ data:
   teacher_dump_root: data/teacher_dump
   train_split: data/splits/train.json
   val_split: data/splits/val.json
+  test_split: data/splits/test.json
+  image_prompt: "Describe the driving scene and choose the next trajectory."
+  max_frames: 128
   include_kv_cache: false
 model:
   backbone_name: Qwen/Qwen2.5-VL-3B-Instruct
+  processor_name: Qwen/Qwen2.5-VL-3B-Instruct
   lora_rank: 64
   lora_alpha: 128
   lora_dropout: 0.05

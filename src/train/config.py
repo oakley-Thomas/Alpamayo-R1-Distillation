@@ -19,6 +19,9 @@ class Stage2DataConfig:
     teacher_dump_root: str
     train_split: str
     val_split: str
+    test_split: str
+    image_prompt: str
+    max_frames: int
     include_kv_cache: bool = False
 
 
@@ -27,6 +30,7 @@ class Stage2ModelConfig:
     """Student VLM loading options for Stage 2."""
 
     backbone_name: str
+    processor_name: str
     lora_rank: int
     lora_alpha: int
     lora_dropout: float

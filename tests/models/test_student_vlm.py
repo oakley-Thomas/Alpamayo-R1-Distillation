@@ -45,3 +45,12 @@ def test_student_vlm_forward_with_fake_backbone() -> None:
     output = model(input_ids=input_ids, hidden_position_mask=hidden_position_mask)
     assert output.logits.shape == (2, 3, 16)
     assert output.adapted_hidden_states.shape == (2, 2, 4)
+
+
+def test_student_vlm_selects_logit_positions() -> None:
+    model = StudentVLM(backbone=FakeBackbone(), student_hidden_dim=6, teacher_hidden_dim=4)
+    input_ids = torch.tensor([[1, 2, 3, 4]])
+    logit_position_mask = torch.tensor([[False, True, True, False]])
+    output = model(input_ids=input_ids, logit_position_mask=logit_position_mask)
+    assert output.logits.shape == (1, 2, 16)
+    assert output.adapted_hidden_states.shape == (1, 4, 4)

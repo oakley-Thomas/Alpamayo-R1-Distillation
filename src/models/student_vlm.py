@@ -159,6 +159,7 @@ class StudentVLM(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         hidden_position_mask: torch.Tensor | None = None,
+        logit_position_mask: torch.Tensor | None = None,
         **model_kwargs: Any,
     ) -> Stage2ModelOutput:
         """Run the student VLM and adapt selected hidden states.
@@ -168,11 +169,13 @@ class StudentVLM(nn.Module):
             attention_mask: Optional attention mask, shape (B, L).
             hidden_position_mask: Optional boolean mask selecting Action-Expert
                 conditioning positions from the final decoder layer, shape (B, L).
+            logit_position_mask: Optional boolean mask selecting generated-token
+                logit positions for CoC distillation, shape (B, L).
             **model_kwargs: Extra model-specific tensors such as image inputs.
 
         Returns:
-            Student logits, shape (B, L, V), and adapted hidden states, shape
-            (B, T_cond, D_teacher).
+            Student logits, shape (B, T_coc, V), and adapted hidden states,
+            shape (B, T_cond, D_teacher).
         """
         outputs = self.backbone(
             input_ids=input_ids,
@@ -183,8 +186,9 @@ class StudentVLM(nn.Module):
         )
         hidden_states = _last_hidden_state(outputs)
         selected_hidden = _select_hidden_positions(hidden_states, hidden_position_mask)
+        selected_logits = _select_sequence_positions(outputs.logits, logit_position_mask, "logits")
         return Stage2ModelOutput(
-            logits=outputs.logits,
+            logits=selected_logits,
             adapted_hidden_states=self.hidden_adapter(selected_hidden),
         )
 
@@ -203,24 +207,32 @@ def _select_hidden_positions(
     hidden_states: torch.Tensor,
     hidden_position_mask: torch.Tensor | None,
 ) -> torch.Tensor:
-    if hidden_position_mask is None:
-        return hidden_states
-    if hidden_position_mask.shape != hidden_states.shape[:2]:
-        raise ValueError("hidden_position_mask must have shape (B, L)")
+    return _select_sequence_positions(hidden_states, hidden_position_mask, "hidden_states")
+
+
+def _select_sequence_positions(
+    values: torch.Tensor,
+    position_mask: torch.Tensor | None,
+    value_name: str,
+) -> torch.Tensor:
+    if position_mask is None:
+        return values
+    if position_mask.shape != values.shape[:2]:
+        raise ValueError(f"{value_name} position mask must have shape (B, L)")
 
     selected: list[torch.Tensor] = []
     lengths: list[int] = []
-    for batch_idx in range(hidden_states.shape[0]):
-        values = hidden_states[batch_idx][hidden_position_mask[batch_idx]]
-        if values.shape[0] == 0:
-            raise ValueError("Each sample must select at least one hidden position")
-        selected.append(values)
-        lengths.append(int(values.shape[0]))
+    for batch_idx in range(values.shape[0]):
+        selected_values = values[batch_idx][position_mask[batch_idx]]
+        if selected_values.shape[0] == 0:
+            raise ValueError(f"Each sample must select at least one {value_name} position")
+        selected.append(selected_values)
+        lengths.append(int(selected_values.shape[0]))
 
     max_len = max(lengths)
-    padded = hidden_states.new_zeros((hidden_states.shape[0], max_len, hidden_states.shape[-1]))
-    for batch_idx, values in enumerate(selected):
-        padded[batch_idx, : values.shape[0]] = values
+    padded = values.new_zeros((values.shape[0], max_len, values.shape[-1]))
+    for batch_idx, selected_values in enumerate(selected):
+        padded[batch_idx, : selected_values.shape[0]] = selected_values
     return padded
 
 
