@@ -14,7 +14,6 @@ from src.data.teacher_dump import (
     validate_teacher_clip,
 )
 
-
 MakeDump = Callable[..., tuple[Path, Path]]
 
 
@@ -40,13 +39,13 @@ def test_collate_teacher_examples_pads_batch(mini_dump: tuple[Path, Path]) -> No
 
 def test_validate_teacher_clip_rejects_missing_hidden_states(make_dump: MakeDump) -> None:
     dump_root, _split_file = make_dump(corruption="missing_hidden")
-    with pytest.raises(ClipValidationError, match="clip-a.*hidden_states"):
+    with pytest.raises(ClipValidationError, match=r"clip-a.*hidden_states"):
         validate_teacher_clip(dump_root / "clip-a")
 
 
 def test_validate_teacher_clip_rejects_malformed_topk(make_dump: MakeDump) -> None:
     dump_root, _split_file = make_dump(corruption="malformed_topk")
-    with pytest.raises(ClipValidationError, match="clip-a.*top-k"):
+    with pytest.raises(ClipValidationError, match=r"clip-a.*top-k"):
         validate_teacher_clip(dump_root / "clip-a")
 
 
@@ -58,7 +57,7 @@ def test_missing_kv_cache_is_optional_by_default(make_dump: MakeDump) -> None:
 
 def test_include_kv_cache_requires_shards(make_dump: MakeDump) -> None:
     dump_root, split_file = make_dump(corruption="missing_kv_file")
-    with pytest.raises(ClipValidationError, match="clip-a.*kv_layer_000"):
+    with pytest.raises(ClipValidationError, match=r"clip-a.*kv_layer_000"):
         TeacherDumpDataset(dump_root, split_file, include_kv_cache=True)
 
 

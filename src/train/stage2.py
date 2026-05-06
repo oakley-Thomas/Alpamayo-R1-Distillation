@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
-import subprocess
-import sys
 
 import numpy as np
 import torch

@@ -6,8 +6,8 @@ therefore fails with clip IDs instead of repairing malformed entries.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -15,7 +15,6 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
-
 
 TOP_K_LOGITS = 32
 WAYPOINTS = 64
@@ -198,7 +197,9 @@ def _trace_arrays(trace: Any, clip_id: str) -> CoCTrace:
             if not all(isinstance(item, int) for item in top_ids):
                 raise _clip_error(clip_id, f"top_k_token_ids row {row_idx} contains non-int IDs")
             if not all(isinstance(item, (int, float)) for item in logits):
-                raise _clip_error(clip_id, f"top_k_logits row {row_idx} contains non-numeric logits")
+                raise _clip_error(
+                    clip_id, f"top_k_logits row {row_idx} contains non-numeric logits"
+                )
             token_rows.append(token_id)
             top_k_id_rows.append(top_ids)
             top_k_logit_rows.append([float(item) for item in logits])
@@ -309,7 +310,9 @@ def _validate_conditioning(
     )
 
 
-def validate_teacher_clip(clip_dir: str | Path, include_kv_cache: bool = False) -> TeacherClipManifest:
+def validate_teacher_clip(
+    clip_dir: str | Path, include_kv_cache: bool = False
+) -> TeacherClipManifest:
     """Validate one teacher dump clip and return its manifest.
 
     Args:
@@ -386,7 +389,9 @@ class TeacherDumpDataset(Dataset[TeacherDumpExample]):
     def __getitem__(self, index: int) -> TeacherDumpExample:
         """Load one Stage 2 training example."""
         manifest = self.manifests[index]
-        trace = _trace_arrays(_load_json(manifest.coc_trace_path, manifest.clip_id), manifest.clip_id)
+        trace = _trace_arrays(
+            _load_json(manifest.coc_trace_path, manifest.clip_id), manifest.clip_id
+        )
         hidden_states = np.load(manifest.hidden_states_path)
         token_count = int(trace.token_ids.shape[0])
         hidden_count = int(hidden_states.shape[0])

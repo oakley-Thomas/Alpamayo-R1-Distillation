@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 ALPAMAYO_CONDITIONING_META_KEYS = (
     "traj_future_start_offset",
     "prefill_seq_len",

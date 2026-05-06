@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 
 from src.data.teacher_dump import TOP_K_LOGITS
-
 
 Corruption = Literal["missing_hidden", "malformed_topk", "missing_kv_file"]
 MakeDump = Callable[..., tuple[Path, Path]]

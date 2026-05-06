@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, fields
 from pathlib import Path
-import types
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 
 import yaml
-
 
 T = TypeVar("T")
 

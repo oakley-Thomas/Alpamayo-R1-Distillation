@@ -8,7 +8,6 @@ from pathlib import Path
 from scripts.validate_teacher_dump import main as validate_main
 from src.train.config import load_stage2_config
 
-
 MakeDump = Callable[..., tuple[Path, Path]]
 
 

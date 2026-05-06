@@ -10,7 +10,6 @@ from torch import nn
 
 from src.losses.stage2 import Stage2ModelOutput
 
-
 QLORA_TARGET_MODULES = (
     "q_proj",
     "k_proj",
