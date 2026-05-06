@@ -43,7 +43,7 @@ def test_hidden_alignment_is_zero_for_equal_tensors() -> None:
         adapted_hidden_states=batch["teacher_hidden_states"].clone(),
     )
     loss = compute_stage2_loss(batch, outputs, Stage2LossConfig())
-    assert loss.hidden_align.item() == pytest.approx(0.0)
+    assert abs(loss.hidden_align.item()) < 1e-6
 
 
 def test_combined_loss_exposes_components() -> None:

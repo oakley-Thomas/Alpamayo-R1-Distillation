@@ -53,7 +53,7 @@ def adapter_parameters(model: StudentVLM) -> Iterable[nn.Parameter]:
 def build_stage2_optimizer(model: StudentVLM, config: Stage2Config) -> torch.optim.Optimizer:
     """Build the required paged AdamW optimizer with separate parameter groups."""
     try:
-        from bitsandbytes.optim import PagedAdamW8bit
+        from bitsandbytes.optim.adamw import PagedAdamW8bit
     except ImportError as exc:
         raise RuntimeError("Stage 2 requires bitsandbytes.optim.PagedAdamW8bit") from exc
 
@@ -162,9 +162,9 @@ def run_stage2_training(config_path: str | Path) -> None:
                 if isinstance(value, torch.Tensor)
             }
             outputs = model(input_ids=tensor_batch["token_ids"])
-            loss = compute_stage2_loss(tensor_batch, outputs, loss_config).total
-            scaled_loss = loss / config.training.gradient_accumulation_steps
-            scaled_loss.backward()
+            loss: torch.Tensor = compute_stage2_loss(tensor_batch, outputs, loss_config).total
+            scaled_loss: torch.Tensor = loss / config.training.gradient_accumulation_steps
+            torch.autograd.backward([scaled_loss])
             if (step_idx + 1) % config.training.gradient_accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -19,6 +21,12 @@ QLORA_TARGET_MODULES = (
     "up_proj",
     "down_proj",
 )
+
+
+def _import_attr(module_name: str, attr_name: str) -> Any:
+    """Import a runtime dependency attribute with an ``Any`` boundary."""
+    module = importlib.import_module(module_name)
+    return getattr(module, attr_name)
 
 
 @dataclass(frozen=True)
@@ -41,7 +49,10 @@ class HiddenStateAdapter(nn.Module):
             student_hidden_dim: Last-layer student VLM hidden dimension.
             teacher_hidden_dim: Teacher hidden dimension consumed by the Action Expert.
         """
-        super().__init__()
+        module_init = cast(
+            Callable[[nn.Module], None], object.__getattribute__(nn.Module, "__init__")
+        )
+        module_init(self)
         self.proj = nn.Linear(student_hidden_dim, teacher_hidden_dim)
         self.norm = nn.LayerNorm(teacher_hidden_dim)
 
@@ -73,7 +84,10 @@ class StudentVLM(nn.Module):
             student_hidden_dim: Last-layer student hidden dimension.
             teacher_hidden_dim: Teacher hidden dimension read from the dump.
         """
-        super().__init__()
+        module_init = cast(
+            Callable[[nn.Module], None], object.__getattribute__(nn.Module, "__init__")
+        )
+        module_init(self)
         self.backbone = backbone
         self.hidden_adapter = HiddenStateAdapter(student_hidden_dim, teacher_hidden_dim)
 
@@ -94,8 +108,13 @@ class StudentVLM(nn.Module):
             plus hidden adapter.
         """
         try:
-            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-            from transformers import AutoModelForVision2Seq, BitsAndBytesConfig
+            LoraConfig = _import_attr("peft", "LoraConfig")
+            get_peft_model = _import_attr("peft", "get_peft_model")
+            prepare_model_for_kbit_training = _import_attr(
+                "peft", "prepare_model_for_kbit_training"
+            )
+            AutoModelForVision2Seq = _import_attr("transformers", "AutoModelForVision2Seq")
+            BitsAndBytesConfig = _import_attr("transformers", "BitsAndBytesConfig")
         except ImportError as exc:
             raise RuntimeError(
                 "Loading the real Stage 2 model requires transformers, peft, and bitsandbytes"
@@ -107,12 +126,16 @@ class StudentVLM(nn.Module):
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-        backbone = AutoModelForVision2Seq.from_pretrained(
-            config.backbone_name,
-            quantization_config=quantization_config,
-            torch_dtype=torch.bfloat16,
+        backbone = cast(
+            nn.Module,
+            AutoModelForVision2Seq.from_pretrained(
+                config.backbone_name,
+                quantization_config=quantization_config,
+                torch_dtype=torch.bfloat16,
+            ),
         )
-        backbone = prepare_model_for_kbit_training(backbone, use_gradient_checkpointing=True)
+        prepare_for_kbit = cast(Callable[..., nn.Module], prepare_model_for_kbit_training)
+        backbone = prepare_for_kbit(backbone, use_gradient_checkpointing=True)
         _freeze_vision_modules(backbone)
         lora_config = LoraConfig(
             r=config.lora_rank,
@@ -122,7 +145,8 @@ class StudentVLM(nn.Module):
             bias="none",
             task_type="CAUSAL_LM",
         )
-        backbone = get_peft_model(backbone, lora_config)
+        peft_model = cast(Callable[[nn.Module, Any], nn.Module], get_peft_model)
+        backbone = peft_model(backbone, lora_config)
         student_hidden_dim = _infer_hidden_dim(backbone)
         return cls(
             backbone=backbone,

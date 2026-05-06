@@ -8,10 +8,11 @@ require the 10B teacher model, CUDA, and PhysicalAI dataset access.
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -74,15 +75,28 @@ class ExportTeacherDumpConfig:
     overwrite: bool = False
 
 
+def _import_attr(module_name: str, attr_name: str) -> Any:
+    """Import an attribute from a runtime-only dependency."""
+    module = importlib.import_module(module_name)
+    return getattr(module, attr_name)
+
+
 def read_clip_ids(path: str | Path) -> list[str]:
     """Read clip IDs from a JSON list or object with a ``clip_ids`` list."""
     split_path = Path(path)
     with split_path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
-    clip_ids = data["clip_ids"] if isinstance(data, dict) and "clip_ids" in data else data
-    if not isinstance(clip_ids, list) or not all(isinstance(item, str) for item in clip_ids):
+    if isinstance(data, list):
+        clip_ids = cast(list[object], data)
+    elif isinstance(data, dict):
+        data_obj = cast(dict[str, object], data)
+        raw_clip_ids = data_obj.get("clip_ids")
+        clip_ids = cast(list[object], raw_clip_ids) if isinstance(raw_clip_ids, list) else None
+    else:
+        clip_ids = None
+    if clip_ids is None or not all(isinstance(item, str) for item in clip_ids):
         raise TeacherDumpExportError(f"{split_path} must contain a list of clip ID strings")
-    return clip_ids
+    return [item for item in clip_ids if isinstance(item, str)]
 
 
 def extract_primary_top_k(
@@ -126,9 +140,11 @@ def extract_primary_top_k(
         if step_logits.ndim != 2:
             raise ValueError("each logits step must have shape (N, V)")
         values, indices = torch.topk(step_logits[0].detach().float().cpu(), k=top_k)
+        index_array = indices.to(dtype=torch.int64).cpu().numpy()
+        value_array = values.cpu().numpy()
         token_ids.append(token_id)
-        top_k_token_ids.append([int(item) for item in indices.tolist()])
-        top_k_logits.append([float(item) for item in values.tolist()])
+        top_k_token_ids.append([int(item) for item in index_array])
+        top_k_logits.append([float(item) for item in value_array])
 
     if not token_ids:
         raise TeacherDumpExportError("primary generated sequence contains no non-padding tokens")
@@ -196,7 +212,7 @@ def _save_frames(raw_data: dict[str, Any], frames_dir: Path) -> None:
 def _build_model_inputs(
     model: Any, raw_data: dict[str, Any], device: torch.device
 ) -> dict[str, Any]:
-    from alpamayo1_5 import helper
+    helper = _import_attr("alpamayo1_5", "helper")
 
     processor = helper.get_processor(model.tokenizer)
     messages = helper.create_message(
@@ -222,7 +238,7 @@ def _build_model_inputs(
 def _extract_coc_text(tokenizer: Any, generated_tokens: torch.Tensor) -> str:
     fallback = str(tokenizer.decode(generated_tokens[0], skip_special_tokens=False))
     try:
-        from alpamayo1_5.models.token_utils import extract_text_tokens
+        extract_text_tokens = _import_attr("alpamayo1_5.models.token_utils", "extract_text_tokens")
 
         extracted = extract_text_tokens(tokenizer, generated_tokens[:1])
         text = extracted.get("cot", [""])[0]
@@ -269,14 +285,15 @@ def _rollout_for_export(
     config: ExportTeacherDumpConfig,
     device: torch.device,
 ) -> ExportedRollout:
-    from alpamayo1_5.models.alpamayo1_5 import ExpertLogitsProcessor
-    from alpamayo1_5.models.token_utils import (
-        StopAfterEOS,
-        replace_padding_after_eos,
-        to_special_token,
-    )
     from einops import rearrange, repeat
     from transformers import LogitsProcessorList, StoppingCriteriaList
+
+    ExpertLogitsProcessor = _import_attr("alpamayo1_5.models.alpamayo1_5", "ExpertLogitsProcessor")
+    StopAfterEOS = _import_attr("alpamayo1_5.models.token_utils", "StopAfterEOS")
+    replace_padding_after_eos = _import_attr(
+        "alpamayo1_5.models.token_utils", "replace_padding_after_eos"
+    )
+    to_special_token = _import_attr("alpamayo1_5.models.token_utils", "to_special_token")
 
     data = copy.deepcopy(model_inputs)
     n_samples_total = config.num_traj_samples
@@ -447,7 +464,9 @@ def export_teacher_clip(
     avdi: Any | None = None,
 ) -> None:
     """Export one clip from Alpamayo teacher inference to the Stage 1 dump contract."""
-    from alpamayo1_5.load_physical_aiavdataset import load_physical_aiavdataset
+    load_physical_aiavdataset = _import_attr(
+        "alpamayo1_5.load_physical_aiavdataset", "load_physical_aiavdataset"
+    )
 
     ensure_denoising_available(config.capture_denoising, config.require_stage3_fields)
     clip_dir = config.output_root / clip_id
@@ -460,8 +479,9 @@ def export_teacher_clip(
         model_inputs = _build_model_inputs(model, raw_data, device)
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             rollout = _rollout_for_export(model, model_inputs, config, device)
-        tokenized_data = model_inputs["tokenized_data"]
-        generated_tokens = rollout.sequences[:, tokenized_data["input_ids"].shape[1] :]
+        tokenized_data = cast(dict[str, Any], model_inputs["tokenized_data"])
+        prompt_input_ids = cast(torch.Tensor, tokenized_data["input_ids"])
+        generated_tokens = rollout.sequences[:, prompt_input_ids.shape[1] :]
         trace = extract_primary_top_k(
             generated_tokens,
             rollout.logits,
@@ -524,7 +544,8 @@ def export_teacher_clip(
             traj_future_start_offset=primary_offset,
             prefill_seq_len=rollout.prefill_seq_len,
             rope_deltas=tuple(
-                int(item) for item in rollout.rope_deltas.reshape(-1).detach().cpu().tolist()
+                int(item)
+                for item in rollout.rope_deltas.reshape(-1).detach().cpu().numpy().astype(np.int64)
             ),
             attention_mask_shape=rollout.attention_mask_shape,
             generated_seq_len=int(generated_tokens.shape[1]),
@@ -542,8 +563,7 @@ def export_teacher_dump(config: ExportTeacherDumpConfig) -> None:
     if not torch.cuda.is_available():
         raise TeacherDumpExportError("Teacher dump export requires CUDA")
     ensure_denoising_available(config.capture_denoising, config.require_stage3_fields)
-
-    from alpamayo1_5.models.alpamayo1_5 import Alpamayo1_5
+    Alpamayo1_5 = _import_attr("alpamayo1_5.models.alpamayo1_5", "Alpamayo1_5")
 
     device = torch.device("cuda")
     clip_ids = read_clip_ids(config.clip_ids)

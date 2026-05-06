@@ -33,6 +33,8 @@ pythonVersion = "3.11"
 typeCheckingMode = "strict"
 include = ["src", "tests"]
 venvPath = "."
+reportMissingTypeStubs = "none"
+reportPrivateImportUsage = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

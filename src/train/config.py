@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import types
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 
@@ -97,13 +97,15 @@ def _unwrap_optional(annotation: Any) -> Any:
 def _coerce_dataclass(cls: type[T], data: Any) -> T:
     if not isinstance(data, dict):
         raise ValueError(f"{cls.__name__} expects a mapping")
+    if not is_dataclass(cls):
+        raise TypeError(f"{cls.__name__} must be a dataclass type")
     kwargs: dict[str, Any] = {}
     type_hints = get_type_hints(cls)
     for field in fields(cls):
         if field.name not in data:
             raise ValueError(f"Missing config field {cls.__name__}.{field.name}")
         annotation = _unwrap_optional(type_hints[field.name])
-        if hasattr(annotation, "__dataclass_fields__"):
+        if isinstance(annotation, type) and is_dataclass(annotation):
             kwargs[field.name] = _coerce_dataclass(annotation, data[field.name])
         else:
             kwargs[field.name] = data[field.name]
@@ -115,4 +117,6 @@ def load_stage2_config(path: str | Path) -> Stage2Config:
     config_path = Path(path)
     with config_path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"{config_path} must contain a mapping at the top level")
     return _coerce_dataclass(Stage2Config, data)

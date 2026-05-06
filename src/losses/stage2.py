@@ -45,7 +45,8 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 
 
 def _check_finite(name: str, value: torch.Tensor) -> None:
-    if not torch.isfinite(value).all():
+    isfinite = torch.isfinite
+    if not isfinite(value).all():
         raise FloatingPointError(f"{name} became non-finite")
 
 

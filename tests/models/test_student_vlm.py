@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,7 +16,12 @@ class FakeBackbone(nn.Module):
     """Small backbone that mimics a Hugging Face VLM output."""
 
     def __init__(self) -> None:
-        super().__init__()
+        from typing import cast
+
+        module_init = cast(
+            Callable[[nn.Module], None], object.__getattribute__(nn.Module, "__init__")
+        )
+        module_init(self)
         self.embedding = nn.Embedding(16, 6)
         self.lm_head = nn.Linear(6, 16)
 

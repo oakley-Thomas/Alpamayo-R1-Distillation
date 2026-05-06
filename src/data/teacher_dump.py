@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 import numpy as np
 import torch
@@ -103,28 +103,32 @@ def _require_file(path: Path, clip_id: str) -> None:
 
 def _read_split_file(split_file: Path) -> list[str]:
     data = _load_json(split_file, split_file.stem)
+    clip_ids_obj: object = data
     if isinstance(data, list):
-        clip_ids = data
-    elif isinstance(data, dict) and isinstance(data.get("clip_ids"), list):
-        clip_ids = data["clip_ids"]
-    else:
+        pass
+    elif isinstance(data, dict):
+        data_obj = cast(dict[str, object], data)
+        clip_ids_obj = data_obj.get("clip_ids")
+    if not isinstance(clip_ids_obj, list):
         raise ClipValidationError(f"Split {split_file}: expected list or object with clip_ids")
+    clip_ids = cast(list[object], clip_ids_obj)
     if not all(isinstance(item, str) and item for item in clip_ids):
         raise ClipValidationError(f"Split {split_file}: clip IDs must be non-empty strings")
-    return list(clip_ids)
+    return [item for item in clip_ids if isinstance(item, str) and item]
 
 
 def _validate_meta(meta: Any, clip_dir: Path) -> str:
     fallback_id = clip_dir.name
     if not isinstance(meta, dict):
         raise _clip_error(fallback_id, "meta.json must contain an object")
-    clip_id = meta.get("clip_id")
+    meta_obj = cast(dict[str, object], meta)
+    clip_id = meta_obj.get("clip_id")
     if not isinstance(clip_id, str) or not clip_id:
         raise _clip_error(fallback_id, "meta.json missing string clip_id")
-    num_frames = meta.get("num_frames")
+    num_frames = meta_obj.get("num_frames")
     if not isinstance(num_frames, int) or num_frames <= 0:
         raise _clip_error(clip_id, "meta.json num_frames must be a positive integer")
-    if "fps" not in meta:
+    if "fps" not in meta_obj:
         raise _clip_error(clip_id, "meta.json missing fps")
     return clip_id
 
@@ -157,19 +161,21 @@ def _validate_hidden_states(path: Path, clip_id: str) -> tuple[int, int]:
 def _trace_arrays(trace: Any, clip_id: str) -> CoCTrace:
     if not isinstance(trace, list) or not trace:
         raise _clip_error(clip_id, "coc_trace.json must contain a non-empty list")
+    trace_rows = cast(list[object], trace)
 
     token_rows: list[int] = []
     top_k_id_rows: list[list[int]] = []
     top_k_logit_rows: list[list[float]] = []
     texts: list[str] = []
 
-    for row_idx, row in enumerate(trace):
+    for row_idx, row in enumerate(trace_rows):
         if not isinstance(row, dict):
             raise _clip_error(clip_id, f"coc_trace row {row_idx} must be an object")
-        text = row.get("text")
-        token_ids = row.get("token_ids")
-        top_k_token_ids = row.get("top_k_token_ids")
-        top_k_logits = row.get("top_k_logits")
+        row_obj = cast(dict[str, object], row)
+        text = row_obj.get("text")
+        token_ids = row_obj.get("token_ids")
+        top_k_token_ids = row_obj.get("top_k_token_ids")
+        top_k_logits = row_obj.get("top_k_logits")
         if not isinstance(text, str):
             raise _clip_error(clip_id, f"coc_trace row {row_idx} missing text")
         if not isinstance(token_ids, list) or not token_ids:
@@ -179,30 +185,39 @@ def _trace_arrays(trace: Any, clip_id: str) -> CoCTrace:
                 clip_id,
                 f"coc_trace row {row_idx} must include top_k_token_ids and top_k_logits",
             )
-        if len(top_k_token_ids) != len(token_ids) or len(top_k_logits) != len(token_ids):
+        token_id_list = cast(list[object], token_ids)
+        top_k_token_id_rows = cast(list[object], top_k_token_ids)
+        top_k_logit_rows_obj = cast(list[object], top_k_logits)
+        if len(top_k_token_id_rows) != len(token_id_list) or len(top_k_logit_rows_obj) != len(
+            token_id_list
+        ):
             raise _clip_error(clip_id, f"coc_trace row {row_idx} top-k rows must match token_ids")
 
-        for token_idx, token_id in enumerate(token_ids):
-            top_ids = top_k_token_ids[token_idx]
-            logits = top_k_logits[token_idx]
+        for token_idx, token_id in enumerate(token_id_list):
+            top_ids = top_k_token_id_rows[token_idx]
+            logits = top_k_logit_rows_obj[token_idx]
             if not isinstance(token_id, int):
                 raise _clip_error(clip_id, f"token {token_idx} in row {row_idx} is not an int")
             if not isinstance(top_ids, list) or not isinstance(logits, list):
                 raise _clip_error(clip_id, f"top-k token {token_idx} in row {row_idx} is invalid")
-            if len(top_ids) != TOP_K_LOGITS or len(logits) != TOP_K_LOGITS:
+            top_ids_list = cast(list[object], top_ids)
+            logits_list = cast(list[object], logits)
+            if len(top_ids_list) != TOP_K_LOGITS or len(logits_list) != TOP_K_LOGITS:
                 raise _clip_error(
                     clip_id,
                     f"top-k token {token_idx} in row {row_idx} must have {TOP_K_LOGITS} entries",
                 )
-            if not all(isinstance(item, int) for item in top_ids):
+            if not all(isinstance(item, int) for item in top_ids_list):
                 raise _clip_error(clip_id, f"top_k_token_ids row {row_idx} contains non-int IDs")
-            if not all(isinstance(item, (int, float)) for item in logits):
+            if not all(isinstance(item, (int, float)) for item in logits_list):
                 raise _clip_error(
                     clip_id, f"top_k_logits row {row_idx} contains non-numeric logits"
                 )
             token_rows.append(token_id)
-            top_k_id_rows.append(top_ids)
-            top_k_logit_rows.append([float(item) for item in logits])
+            top_k_id_rows.append([int(item) for item in top_ids_list if isinstance(item, int)])
+            top_k_logit_rows.append(
+                [float(item) for item in logits_list if isinstance(item, (int, float))]
+            )
         texts.append(text)
 
     return CoCTrace(
@@ -262,6 +277,7 @@ def _validate_conditioning(
     data = _load_json(meta_path, clip_id)
     if not isinstance(data, dict):
         raise _clip_error(clip_id, "conditioning_meta.json must contain an object")
+    meta = cast(dict[str, object], data)
 
     required_ints = [
         "traj_future_start_offset",
@@ -270,26 +286,37 @@ def _validate_conditioning(
         "n_diffusion_tokens",
     ]
     for key in required_ints:
-        if not isinstance(data.get(key), int) or data[key] < 0:
+        value = meta.get(key)
+        if not isinstance(value, int) or value < 0:
             raise _clip_error(clip_id, f"conditioning_meta.json {key} must be a non-negative int")
-    rope_deltas = data.get("rope_deltas")
-    attention_mask_shape = data.get("attention_mask_shape")
-    if not isinstance(rope_deltas, list) or not all(isinstance(item, int) for item in rope_deltas):
+    rope_deltas = meta.get("rope_deltas")
+    attention_mask_shape = meta.get("attention_mask_shape")
+    rope_deltas_obj = cast(list[object], rope_deltas) if isinstance(rope_deltas, list) else None
+    if rope_deltas_obj is None or not all(isinstance(item, int) for item in rope_deltas_obj):
         raise _clip_error(clip_id, "conditioning_meta.json rope_deltas must be a list of ints")
-    if not isinstance(attention_mask_shape, list) or not all(
-        isinstance(item, int) for item in attention_mask_shape
+    attention_mask_shape_obj = (
+        cast(list[object], attention_mask_shape) if isinstance(attention_mask_shape, list) else None
+    )
+    if attention_mask_shape_obj is None or not all(
+        isinstance(item, int) for item in attention_mask_shape_obj
     ):
         raise _clip_error(
             clip_id,
             "conditioning_meta.json attention_mask_shape must be a list of ints",
         )
-    kv_cache_file_names = data.get("kv_cache_files", [])
-    if not isinstance(kv_cache_file_names, list) or not all(
-        isinstance(item, str) for item in kv_cache_file_names
+    kv_cache_file_names = meta.get("kv_cache_files", [])
+    kv_cache_file_names_obj = (
+        cast(list[object], kv_cache_file_names) if isinstance(kv_cache_file_names, list) else None
+    )
+    if kv_cache_file_names_obj is None or not all(
+        isinstance(item, str) for item in kv_cache_file_names_obj
     ):
         raise _clip_error(clip_id, "conditioning_meta.json kv_cache_files must be a list of paths")
+    rope_delta_list = [item for item in rope_deltas_obj if isinstance(item, int)]
+    attention_mask_shape_list = [item for item in attention_mask_shape_obj if isinstance(item, int)]
+    kv_cache_name_list = [item for item in kv_cache_file_names_obj if isinstance(item, str)]
 
-    kv_cache_files = tuple(conditioning_dir / name for name in kv_cache_file_names)
+    kv_cache_files = tuple(conditioning_dir / name for name in kv_cache_name_list)
     if include_kv_cache:
         if not kv_cache_files:
             raise _clip_error(clip_id, "include_kv_cache=True requires KV cache files")
@@ -298,13 +325,13 @@ def _validate_conditioning(
 
     return (
         ConditioningMeta(
-            traj_future_start_offset=data["traj_future_start_offset"],
-            prefill_seq_len=data["prefill_seq_len"],
-            rope_deltas=tuple(rope_deltas),
-            attention_mask_shape=tuple(attention_mask_shape),
-            generated_seq_len=data["generated_seq_len"],
-            n_diffusion_tokens=data["n_diffusion_tokens"],
-            kv_cache_files=tuple(kv_cache_file_names),
+            traj_future_start_offset=cast(int, meta["traj_future_start_offset"]),
+            prefill_seq_len=cast(int, meta["prefill_seq_len"]),
+            rope_deltas=tuple(rope_delta_list),
+            attention_mask_shape=tuple(attention_mask_shape_list),
+            generated_seq_len=cast(int, meta["generated_seq_len"]),
+            n_diffusion_tokens=cast(int, meta["n_diffusion_tokens"]),
+            kv_cache_files=tuple(kv_cache_name_list),
         ),
         kv_cache_files,
     )
