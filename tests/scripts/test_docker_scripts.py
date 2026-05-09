@@ -15,6 +15,7 @@ DOCKER_SCRIPTS = [
     "train_stage2.sh",
     "eval_stage2.sh",
     "export_teacher_dump.sh",
+    "download_physical_ai_dataset.sh",
 ]
 
 
@@ -43,9 +44,13 @@ def test_bootstrap_clones_repo_and_initializes_alpamayo_submodule() -> None:
 def test_docker_shell_mounts_repo_and_hf_cache() -> None:
     shell_script = Path("scripts/docker/shell.sh").read_text(encoding="utf-8")
     assert "GPU_MODE=" in shell_script
+    assert "HF_VOLUME=" in shell_script
+    assert "HF_MOUNT_SOURCE=" in shell_script
+    assert "HF_TOKEN" in shell_script
+    assert "HUGGING_FACE_HUB_TOKEN" in shell_script
     assert "--gpus all" in shell_script
     assert '-v "${REPO_ROOT}:/workspace"' in shell_script
-    assert '-v "${HF_CACHE}:/cache/huggingface"' in shell_script
+    assert '-v "${HF_MOUNT_SOURCE}:/cache/huggingface"' in shell_script
 
 
 def test_cpu_only_wrappers_disable_gpu_mode() -> None:
@@ -69,3 +74,12 @@ def test_export_wrapper_runs_public_export_cli() -> None:
     assert "python -m scripts.export_teacher_dump" in wrapper
     assert "--num-traj-samples" in wrapper
     assert "--top-k" in wrapper
+
+
+def test_download_physical_ai_wrapper_mounts_named_hf_volume() -> None:
+    wrapper = Path("scripts/docker/download_physical_ai_dataset.sh").read_text(encoding="utf-8")
+    assert 'HF_VOLUME="${HF_VOLUME:-NVIDIA-PHYSICAL-AI}"' in wrapper
+    assert "HF_TOKEN" in wrapper
+    assert '-v "${HF_VOLUME}:/cache/huggingface"' in wrapper
+    assert "python -m scripts.download_physical_ai_dataset" in wrapper
+    assert "nvidia/PhysicalAI-Autonomous-Vehicles" in wrapper

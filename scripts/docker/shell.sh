@@ -4,9 +4,17 @@ set -euo pipefail
 IMAGE_NAME="${IMAGE_NAME:-alpamayo-distill:stage2}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HF_CACHE="${HF_HOME:-${HOME}/.cache/huggingface}"
+HF_VOLUME="${HF_VOLUME:-}"
 GPU_MODE="${GPU_MODE:-all}"
 
-mkdir -p "${HF_CACHE}" "${REPO_ROOT}/data" "${REPO_ROOT}/outputs"
+if [[ -n "${HF_VOLUME}" ]]; then
+    HF_MOUNT_SOURCE="${HF_VOLUME}"
+else
+    HF_MOUNT_SOURCE="${HF_CACHE}"
+    mkdir -p "${HF_CACHE}"
+fi
+
+mkdir -p "${REPO_ROOT}/data" "${REPO_ROOT}/outputs"
 
 if [ "$#" -eq 0 ]; then
     set -- /bin/bash
@@ -30,15 +38,25 @@ case "${GPU_MODE}" in
         ;;
 esac
 
+ENV_ARGS=(
+    -e HF_HOME=/cache/huggingface
+    -e PYTHONPATH=/workspace:/workspace/alpamayo1.5/src
+)
+if [[ -n "${HF_TOKEN:-}" ]]; then
+    ENV_ARGS+=(-e "HF_TOKEN=${HF_TOKEN}")
+fi
+if [[ -n "${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
+    ENV_ARGS+=(-e "HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}")
+fi
+
 docker run --rm "${TTY_ARGS[@]}" \
     "${GPU_ARGS[@]}" \
     --ipc=host \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
-    -e HF_HOME=/cache/huggingface \
-    -e PYTHONPATH=/workspace:/workspace/alpamayo1.5/src \
+    "${ENV_ARGS[@]}" \
     -v "${REPO_ROOT}:/workspace" \
-    -v "${HF_CACHE}:/cache/huggingface" \
+    -v "${HF_MOUNT_SOURCE}:/cache/huggingface" \
     -w /workspace \
     "${IMAGE_NAME}" \
     "$@"
