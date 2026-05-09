@@ -27,30 +27,36 @@ COPY scripts/docker/bootstrap_repo.sh /usr/local/bin/bootstrap_repo.sh
 
 RUN python --version \
     && python -m pip install --upgrade pip setuptools wheel packaging ninja \
-    && python -m pip install "uv_build>=0.9.7,<0.10.0" \
-    && python -m pip install \
-        "physical-ai-av==0.2.0" \
-        "av>=16.0.1" \
-        "einops>=0.8.1" \
-        "hydra-colorlog>=1.2.0" \
-        "hydra-core>=1.3.2" \
-        "matplotlib>=3.10.7" \
-        "numpy>=1.26" \
-        "pandas>=2.3.3" \
-        "pillow>=12.0.0" \
-        "pyyaml>=6.0" \
-        "seaborn>=0.13.2" \
-        "torch==2.8.0" \
-        "torchvision>=0.23.0" \
-        "transformers==4.57.1" \
-        "bitsandbytes" \
-        "peft" \
-        "accelerate" \
-        "ruff" \
-        "pyright" \
-        "pytest" \
-    && python -m pip install --no-build-isolation "flash-attn>=2.8.3" \
+    && python -m pip install "uv_build>=0.9.7,<0.10.0"
+
+RUN python -m pip install \
+    "torch==2.8.0" \
+    "torchvision>=0.23.0"
+
+RUN python -m pip install \
+    "physical-ai-av==0.2.0" \
+    "av>=16.0.1" \
+    "einops>=0.8.1" \
+    "hydra-colorlog>=1.2.0" \
+    "hydra-core>=1.3.2" \
+    "matplotlib>=3.10.7" \
+    "numpy>=1.26" \
+    "pandas>=2.3.3" \
+    "pillow>=12.0.0" \
+    "pyyaml>=6.0" \
+    "seaborn>=0.13.2" \
+    "transformers==4.57.1" \
+    "bitsandbytes" \
+    "peft" \
+    "accelerate"
+
+RUN python -m pip install \
+    "ruff" \
+    "pyright" \
+    "pytest"
+
+RUN python -m pip install --no-build-isolation "flash-attn>=2.8.3" \
     && chmod +x /usr/local/bin/bootstrap_repo.sh
 
 ENTRYPOINT ["/usr/local/bin/bootstrap_repo.sh"]
-CMD ["scripts/portainer/export_teacher_dump_all.sh"]
+CMD ["bash"]

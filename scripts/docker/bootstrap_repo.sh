@@ -86,7 +86,7 @@ fi
 cd "${repo_dir}"
 
 if [[ "$#" -eq 0 ]]; then
-    set -- scripts/portainer/export_teacher_dump_all.sh
+    set -- bash
 fi
 
 exec "$@"
