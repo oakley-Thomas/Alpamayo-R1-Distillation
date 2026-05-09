@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -13,6 +15,7 @@ from src.data.export_teacher_dump import (
     conditioning_record_to_json,
     ensure_denoising_available,
     extract_primary_top_k,
+    replay_hidden_states_for_export,
     select_hidden_states_until_offset,
 )
 from src.models.teacher_iface import AlpamayoConditioningRecord
@@ -40,6 +43,44 @@ def test_select_hidden_states_until_expert_offset_returns_fp16() -> None:
     assert selected.shape == (3, 3)
     assert selected.dtype == np.float16
     assert selected[-1].tolist() == [6.0, 7.0, 8.0]
+
+
+def test_replay_hidden_states_uses_base_model_without_logits() -> None:
+    class FakeBaseModel:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        def __call__(self, **kwargs: Any) -> SimpleNamespace:
+            self.kwargs = kwargs
+            hidden = torch.arange(12, dtype=torch.float32).reshape(1, 4, 3)
+            return SimpleNamespace(last_hidden_state=hidden)
+
+    class FailingConditionalWrapper:
+        def __init__(self) -> None:
+            self.model = FakeBaseModel()
+
+        def __call__(self, **_kwargs: Any) -> None:
+            raise AssertionError("hidden replay should bypass logits-producing wrapper")
+
+    wrapper = FailingConditionalWrapper()
+    teacher = SimpleNamespace(vlm=wrapper)
+    tokenized_data = {
+        "pixel_values": torch.ones((2, 3), dtype=torch.float32),
+        "image_grid_thw": torch.ones((1, 3), dtype=torch.long),
+    }
+
+    selected = replay_hidden_states_for_export(
+        teacher,
+        tokenized_data,
+        sequence=torch.tensor([1, 2, 3, 4]),
+        offset=2,
+    )
+
+    assert selected.shape == (2, 3)
+    assert selected.dtype == np.float16
+    assert wrapper.model.kwargs["output_hidden_states"] is False
+    assert wrapper.model.kwargs["use_cache"] is False
+    assert wrapper.model.kwargs["pixel_values"] is tokenized_data["pixel_values"]
 
 
 def test_conditioning_metadata_json_round_trip() -> None:

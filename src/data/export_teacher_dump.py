@@ -249,24 +249,46 @@ def _extract_coc_text(tokenizer: Any, generated_tokens: torch.Tensor) -> str:
     return fallback
 
 
-def _replay_hidden_states(
+def replay_hidden_states_for_export(
     model: Any,
     tokenized_data: dict[str, Any],
     sequence: torch.Tensor,
     offset: int,
 ) -> np.ndarray:
+    """Replay the teacher VLM base model and return final-layer conditioning states.
+
+    Args:
+        model: Alpamayo teacher model exposing ``vlm.model``.
+        tokenized_data: Processor outputs containing image/video tensors for the prompt.
+        sequence: Full prompt plus generated sequence, shape (L,).
+        offset: Position immediately after ``<|traj_future_start|>``.
+
+    Returns:
+        Hidden states up to ``offset``, shape (T, D_h), dtype fp16.
+    """
+    vlm_base = getattr(model.vlm, "model", None)
+    if vlm_base is None:
+        raise TeacherDumpExportError("Teacher VLM does not expose a base model for hidden replay")
     replay_kwargs: dict[str, Any] = {
         "input_ids": sequence.unsqueeze(0),
         "attention_mask": torch.ones_like(sequence, dtype=torch.long).unsqueeze(0),
-        "output_hidden_states": True,
+        "output_hidden_states": False,
         "return_dict": True,
         "use_cache": False,
     }
-    for key in ("pixel_values", "image_grid_thw"):
+    for key in (
+        "pixel_values",
+        "pixel_values_videos",
+        "image_grid_thw",
+        "video_grid_thw",
+        "mm_token_type_ids",
+    ):
         if key in tokenized_data:
             replay_kwargs[key] = tokenized_data[key]
-    outputs = model.vlm(**replay_kwargs)
-    hidden_states = outputs.hidden_states[-1]
+    outputs = vlm_base(**replay_kwargs)
+    hidden_states = (
+        outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]
+    )
     return select_hidden_states_until_offset(hidden_states, offset)
 
 
@@ -490,16 +512,32 @@ def export_teacher_clip(
         )
         primary_text = _extract_coc_text(model.tokenizer, generated_tokens)
         primary_offset = int(rollout.offset[0].item())
-        hidden_states = _replay_hidden_states(
-            model,
-            tokenized_data,
-            rollout.sequences[0],
-            offset=primary_offset,
+        sequence_for_replay = rollout.sequences[0].detach().clone()
+        trajectories = rollout.pred_xyz.detach().cpu().float().numpy().astype(np.float32)
+        denoising_x_t = rollout.denoising_x_t
+        denoising_t = rollout.denoising_t
+        denoising_v_pred = rollout.denoising_v_pred
+        generated_seq_len = int(generated_tokens.shape[1])
+        n_diffusion_tokens = int(model.action_space.get_action_space_dims()[0])
+        prefill_seq_len = rollout.prefill_seq_len
+        rope_deltas = tuple(
+            int(item)
+            for item in rollout.rope_deltas.reshape(-1).detach().cpu().numpy().astype(np.int64)
         )
+        attention_mask_shape = rollout.attention_mask_shape
         kv_files = _write_kv_cache(
             rollout.prompt_cache,
             clip_dir / "conditioning",
             include_kv_cache=config.include_kv_cache,
+        )
+        del generated_tokens
+        del rollout
+        torch.cuda.empty_cache()
+        hidden_states = replay_hidden_states_for_export(
+            model,
+            tokenized_data,
+            sequence_for_replay,
+            offset=primary_offset,
         )
     except Exception as exc:
         raise TeacherDumpExportError(f"Clip {clip_id}: export failed: {exc}") from exc
@@ -531,25 +569,22 @@ def export_teacher_clip(
     np.save(clip_dir / "hidden_states.npy", hidden_states)
     np.save(
         clip_dir / "trajectories.npy",
-        rollout.pred_xyz.detach().cpu().float().numpy().astype(np.float32),
+        trajectories,
     )
     np.savez(
         clip_dir / "denoising_traj.npz",
-        x_t=rollout.denoising_x_t,
-        t=rollout.denoising_t,
-        v_pred=rollout.denoising_v_pred,
+        x_t=denoising_x_t,
+        t=denoising_t,
+        v_pred=denoising_v_pred,
     )
     if config.include_kv_cache:
         record = AlpamayoConditioningRecord(
             traj_future_start_offset=primary_offset,
-            prefill_seq_len=rollout.prefill_seq_len,
-            rope_deltas=tuple(
-                int(item)
-                for item in rollout.rope_deltas.reshape(-1).detach().cpu().numpy().astype(np.int64)
-            ),
-            attention_mask_shape=rollout.attention_mask_shape,
-            generated_seq_len=int(generated_tokens.shape[1]),
-            n_diffusion_tokens=int(model.action_space.get_action_space_dims()[0]),
+            prefill_seq_len=prefill_seq_len,
+            rope_deltas=rope_deltas,
+            attention_mask_shape=attention_mask_shape,
+            generated_seq_len=generated_seq_len,
+            n_diffusion_tokens=n_diffusion_tokens,
             kv_cache_files=kv_files,
         )
         _write_json(
