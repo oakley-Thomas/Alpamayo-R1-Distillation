@@ -5,6 +5,7 @@ services:
     environment:
       HF_HOME: /cache/huggingface
       HF_TOKEN: ${HF_TOKEN}
+      HF_HUB_DISABLE_XET: "1"
       REPO_REF: VLM-Backbone
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility

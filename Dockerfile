@@ -2,6 +2,7 @@ FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/cache/huggingface \
+    HF_HUB_DISABLE_XET=1 \
     PYTHONPATH=/workspace/repo:/workspace/repo/alpamayo1.5/src \
     PIP_NO_CACHE_DIR=1 \
     MAX_JOBS=4 \

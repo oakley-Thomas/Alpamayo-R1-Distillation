@@ -40,6 +40,7 @@ esac
 
 ENV_ARGS=(
     -e HF_HOME=/cache/huggingface
+    -e "HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}"
     -e PYTHONPATH=/workspace:/workspace/alpamayo1.5/src
 )
 if [[ -n "${HF_TOKEN:-}" ]]; then

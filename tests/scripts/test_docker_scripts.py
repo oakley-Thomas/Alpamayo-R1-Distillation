@@ -23,6 +23,7 @@ def test_dockerfile_uses_unified_cuda_image() -> None:
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     assert "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel" in dockerfile
     assert "HF_HOME=/cache/huggingface" in dockerfile
+    assert "HF_HUB_DISABLE_XET=1" in dockerfile
     assert "PYTHONPATH=/workspace/repo:/workspace/repo/alpamayo1.5/src" in dockerfile
     assert "REPO_URL=https://github.com/oakley-Thomas/CSE676-Project.git" in dockerfile
     assert 'ENTRYPOINT ["/usr/local/bin/bootstrap_repo.sh"]' in dockerfile
@@ -46,6 +47,7 @@ def test_docker_shell_mounts_repo_and_hf_cache() -> None:
     assert "GPU_MODE=" in shell_script
     assert "HF_VOLUME=" in shell_script
     assert "HF_MOUNT_SOURCE=" in shell_script
+    assert "HF_HUB_DISABLE_XET" in shell_script
     assert "HF_TOKEN" in shell_script
     assert "HUGGING_FACE_HUB_TOKEN" in shell_script
     assert "--gpus all" in shell_script
@@ -79,6 +81,7 @@ def test_export_wrapper_runs_public_export_cli() -> None:
 def test_download_physical_ai_wrapper_mounts_named_hf_volume() -> None:
     wrapper = Path("scripts/docker/download_physical_ai_dataset.sh").read_text(encoding="utf-8")
     assert 'HF_VOLUME="${HF_VOLUME:-NVIDIA-PHYSICAL-AI}"' in wrapper
+    assert "HF_HUB_DISABLE_XET" in wrapper
     assert "HF_TOKEN" in wrapper
     assert '-v "${HF_VOLUME}:/cache/huggingface"' in wrapper
     assert "python -m scripts.download_physical_ai_dataset" in wrapper

@@ -12,7 +12,10 @@ if [[ -z "${HF_TOKEN:-}" && -z "${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
     echo "HF_TOKEN is not set; gated dataset download will fail unless the mounted volume already has a Hugging Face login." >&2
 fi
 
-ENV_ARGS=(-e HF_HOME=/cache/huggingface)
+ENV_ARGS=(
+    -e HF_HOME=/cache/huggingface
+    -e "HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}"
+)
 if [[ -n "${HF_TOKEN:-}" ]]; then
     ENV_ARGS+=(-e "HF_TOKEN=${HF_TOKEN}")
 fi
