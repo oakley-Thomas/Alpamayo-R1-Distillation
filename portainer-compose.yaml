@@ -1,0 +1,28 @@
+services:
+  alpamayo-teacher-workbench:
+    image: oakleyth/alpamayo-distill:vlm-backbone
+    command: ["bash", "-lc", "sleep infinity"]
+    environment:
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: ${HF_TOKEN}
+      REPO_REF: VLM-Backbone
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - NVIDIA-PHYSICAL-AI:/cache/huggingface
+      - alpamayo-data:/workspace/data
+      - alpamayo-outputs:/workspace/outputs
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    runtime: nvidia
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
+
+volumes:
+  NVIDIA-PHYSICAL-AI:
+    external: true
+  alpamayo-data:
+  alpamayo-outputs:
