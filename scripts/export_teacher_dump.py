@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--model-name", default="nvidia/Alpamayo-1.5-10B")
     parser.add_argument("--num-traj-samples", type=int, default=16)
+    parser.add_argument("--traj-sample-batch-size", type=int, default=1)
     parser.add_argument("--top-k", type=int, default=32)
     parser.add_argument("--max-generation-length", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.6)
@@ -36,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
             output_root=Path(args.output_root),
             model_name=args.model_name,
             num_traj_samples=args.num_traj_samples,
+            traj_sample_batch_size=args.traj_sample_batch_size,
             top_k=args.top_k,
             max_generation_length=args.max_generation_length,
             temperature=args.temperature,

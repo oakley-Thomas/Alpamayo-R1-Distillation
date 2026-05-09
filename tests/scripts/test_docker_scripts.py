@@ -75,6 +75,7 @@ def test_export_wrapper_runs_public_export_cli() -> None:
     wrapper = Path("scripts/docker/export_teacher_dump.sh").read_text(encoding="utf-8")
     assert "python -m scripts.export_teacher_dump" in wrapper
     assert "--num-traj-samples" in wrapper
+    assert "--traj-sample-batch-size" in wrapper
     assert "--top-k" in wrapper
 
 

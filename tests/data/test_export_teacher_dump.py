@@ -19,6 +19,7 @@ from src.data.export_teacher_dump import (
     replay_hidden_states_for_export,
     restore_teacher_action_modules_after_replay,
     select_hidden_states_until_offset,
+    trajectory_sample_batch_sizes,
 )
 from src.models.teacher_iface import AlpamayoConditioningRecord
 
@@ -139,3 +140,15 @@ def test_stage3_ready_export_requires_denoising_capture() -> None:
 
 def test_stage2_only_export_can_skip_denoising_capture() -> None:
     ensure_denoising_available(capture_denoising=False, require_stage3_fields=False)
+
+
+def test_trajectory_sample_batch_sizes_chunk_requested_samples() -> None:
+    assert trajectory_sample_batch_sizes(num_traj_samples=8, batch_size=3) == (3, 3, 2)
+    assert trajectory_sample_batch_sizes(num_traj_samples=1, batch_size=4) == (1,)
+
+
+def test_trajectory_sample_batch_sizes_reject_invalid_counts() -> None:
+    with pytest.raises(TeacherDumpExportError, match="num_traj_samples"):
+        trajectory_sample_batch_sizes(num_traj_samples=0, batch_size=1)
+    with pytest.raises(TeacherDumpExportError, match="traj_sample_batch_size"):
+        trajectory_sample_batch_sizes(num_traj_samples=1, batch_size=0)

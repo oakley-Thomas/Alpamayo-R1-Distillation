@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,6 +23,7 @@ from src.models.teacher_iface import AlpamayoConditioningRecord
 DEFAULT_MODEL_NAME = "nvidia/Alpamayo-1.5-10B"
 DEFAULT_TOP_K = 32
 DEFAULT_NUM_TRAJ_SAMPLES = 16
+DEFAULT_TRAJ_SAMPLE_BATCH_SIZE = 1
 DEFAULT_MAX_GENERATION_LENGTH = 256
 TEACHER_ACTION_MODULE_NAMES = (
     "expert",
@@ -71,6 +72,7 @@ class ExportTeacherDumpConfig:
     output_root: Path
     model_name: str = DEFAULT_MODEL_NAME
     num_traj_samples: int = DEFAULT_NUM_TRAJ_SAMPLES
+    traj_sample_batch_size: int = DEFAULT_TRAJ_SAMPLE_BATCH_SIZE
     top_k: int = DEFAULT_TOP_K
     max_generation_length: int = DEFAULT_MAX_GENERATION_LENGTH
     temperature: float = 0.6
@@ -198,6 +200,30 @@ def ensure_denoising_available(
             "Stage 3-ready teacher dumps require --capture-denoising; "
             "use --stage2-only to omit denoising fields.",
         )
+
+
+def trajectory_sample_batch_sizes(num_traj_samples: int, batch_size: int) -> tuple[int, ...]:
+    """Split requested teacher trajectory samples into rollout batch sizes.
+
+    Args:
+        num_traj_samples: Total number of trajectory samples to export.
+        batch_size: Maximum number of VLM return sequences per rollout.
+
+    Returns:
+        Tuple of positive rollout sizes whose sum is ``num_traj_samples``.
+    """
+    if num_traj_samples <= 0:
+        raise TeacherDumpExportError("num_traj_samples must be positive")
+    if batch_size <= 0:
+        raise TeacherDumpExportError("traj_sample_batch_size must be positive")
+
+    sizes: list[int] = []
+    remaining = num_traj_samples
+    while remaining > 0:
+        current = min(batch_size, remaining)
+        sizes.append(current)
+        remaining -= current
+    return tuple(sizes)
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -352,6 +378,7 @@ def _rollout_for_export(
     model_inputs: dict[str, Any],
     config: ExportTeacherDumpConfig,
     device: torch.device,
+    capture_logits: bool = True,
 ) -> ExportedRollout:
     from einops import rearrange, repeat
     from transformers import LogitsProcessorList, StoppingCriteriaList
@@ -380,7 +407,7 @@ def _rollout_for_export(
     generation_config.do_sample = True
     generation_config.num_return_sequences = config.num_traj_samples
     generation_config.max_new_tokens = config.max_generation_length
-    generation_config.output_logits = True
+    generation_config.output_logits = capture_logits
     generation_config.return_dict_in_generate = True
     generation_config.pad_token_id = model.tokenizer.pad_token_id
 
@@ -488,7 +515,7 @@ def _rollout_for_export(
 
     return ExportedRollout(
         sequences=vlm_outputs.sequences,
-        logits=tuple(vlm_outputs.logits),
+        logits=tuple(vlm_outputs.logits) if capture_logits else (),
         prompt_cache=prompt_cache,
         prefill_seq_len=prefill_seq_len,
         offset=offset,
@@ -545,41 +572,102 @@ def export_teacher_clip(
     try:
         raw_data = load_physical_aiavdataset(clip_id, t0_us=config.t0_us, avdi=avdi)
         model_inputs = _build_model_inputs(model, raw_data, device)
-        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-            rollout = _rollout_for_export(model, model_inputs, config, device)
         tokenized_data = cast(dict[str, Any], model_inputs["tokenized_data"])
         prompt_input_ids = cast(torch.Tensor, tokenized_data["input_ids"])
         prompt_length = prompt_input_ids.shape[1]
         del prompt_input_ids
-        generated_tokens = rollout.sequences[:, prompt_length:]
-        trace = extract_primary_top_k(
-            generated_tokens,
-            rollout.logits,
-            top_k=config.top_k,
-            pad_token_id=model.tokenizer.pad_token_id,
-        )
-        primary_text = _extract_coc_text(model.tokenizer, generated_tokens)
-        primary_offset = int(rollout.offset[0].item())
-        sequence_for_replay = rollout.sequences[0].detach().clone()
-        trajectories = rollout.pred_xyz.detach().cpu().float().numpy().astype(np.float32)
-        denoising_x_t = rollout.denoising_x_t
-        denoising_t = rollout.denoising_t
-        denoising_v_pred = rollout.denoising_v_pred
-        generated_seq_len = int(generated_tokens.shape[1])
+
+        trace: TopKTrace | None = None
+        primary_text: str | None = None
+        primary_offset: int | None = None
+        sequence_for_replay: torch.Tensor | None = None
+        denoising_x_t: np.ndarray | None = None
+        denoising_t: np.ndarray | None = None
+        denoising_v_pred: np.ndarray | None = None
+        generated_seq_len: int | None = None
+        prefill_seq_len: int | None = None
+        rope_deltas: tuple[int, ...] | None = None
+        attention_mask_shape: tuple[int, ...] | None = None
+        kv_files: tuple[str, ...] = ()
+        trajectory_chunks: list[np.ndarray] = []
         n_diffusion_tokens = int(model.action_space.get_action_space_dims()[0])
-        prefill_seq_len = rollout.prefill_seq_len
-        rope_deltas = tuple(
-            int(item)
-            for item in rollout.rope_deltas.reshape(-1).detach().cpu().numpy().astype(np.int64)
+
+        sample_batches = trajectory_sample_batch_sizes(
+            config.num_traj_samples,
+            config.traj_sample_batch_size,
         )
-        attention_mask_shape = rollout.attention_mask_shape
-        kv_files = _write_kv_cache(
-            rollout.prompt_cache,
-            clip_dir / "conditioning",
-            include_kv_cache=config.include_kv_cache,
-        )
-        del generated_tokens
-        del rollout
+
+        for batch_idx, sample_count in enumerate(sample_batches):
+            is_primary_batch = batch_idx == 0
+            batch_config = replace(
+                config,
+                num_traj_samples=sample_count,
+                capture_denoising=config.capture_denoising and is_primary_batch,
+            )
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                rollout = _rollout_for_export(
+                    model,
+                    model_inputs,
+                    batch_config,
+                    device,
+                    capture_logits=is_primary_batch,
+                )
+
+            trajectory_chunks.append(
+                rollout.pred_xyz.detach().cpu().float().numpy().astype(np.float32)
+            )
+
+            if is_primary_batch:
+                generated_tokens = rollout.sequences[:, prompt_length:]
+                trace = extract_primary_top_k(
+                    generated_tokens,
+                    rollout.logits,
+                    top_k=config.top_k,
+                    pad_token_id=model.tokenizer.pad_token_id,
+                )
+                primary_text = _extract_coc_text(model.tokenizer, generated_tokens)
+                primary_offset = int(rollout.offset[0].item())
+                sequence_for_replay = rollout.sequences[0].detach().clone()
+                denoising_x_t = rollout.denoising_x_t
+                denoising_t = rollout.denoising_t
+                denoising_v_pred = rollout.denoising_v_pred
+                generated_seq_len = int(generated_tokens.shape[1])
+                prefill_seq_len = rollout.prefill_seq_len
+                rope_deltas = tuple(
+                    int(item)
+                    for item in rollout.rope_deltas.reshape(-1)
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.int64)
+                )
+                attention_mask_shape = rollout.attention_mask_shape
+                kv_files = _write_kv_cache(
+                    rollout.prompt_cache,
+                    clip_dir / "conditioning",
+                    include_kv_cache=config.include_kv_cache,
+                )
+                del generated_tokens
+
+            del rollout
+            torch.cuda.empty_cache()
+
+        if (
+            trace is None
+            or primary_text is None
+            or primary_offset is None
+            or sequence_for_replay is None
+            or denoising_x_t is None
+            or denoising_t is None
+            or denoising_v_pred is None
+            or generated_seq_len is None
+            or prefill_seq_len is None
+            or rope_deltas is None
+            or attention_mask_shape is None
+        ):
+            raise TeacherDumpExportError("teacher rollout produced no primary batch")
+
+        trajectories = np.concatenate(trajectory_chunks, axis=0)
         del model_inputs
         torch.cuda.empty_cache()
         offloaded_modules = offload_teacher_action_modules_for_replay(model)
