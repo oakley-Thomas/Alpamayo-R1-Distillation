@@ -24,6 +24,13 @@ DEFAULT_MODEL_NAME = "nvidia/Alpamayo-1.5-10B"
 DEFAULT_TOP_K = 32
 DEFAULT_NUM_TRAJ_SAMPLES = 16
 DEFAULT_MAX_GENERATION_LENGTH = 256
+TEACHER_ACTION_MODULE_NAMES = (
+    "expert",
+    "diffusion",
+    "action_in_proj",
+    "action_out_proj",
+    "action_space",
+)
 
 
 class TeacherDumpExportError(RuntimeError):
@@ -285,11 +292,50 @@ def replay_hidden_states_for_export(
     ):
         if key in tokenized_data:
             replay_kwargs[key] = tokenized_data[key]
-    outputs = vlm_base(**replay_kwargs)
+    with torch.inference_mode():
+        outputs = vlm_base(**replay_kwargs)
     hidden_states = (
         outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]
     )
     return select_hidden_states_until_offset(hidden_states, offset)
+
+
+def offload_teacher_action_modules_for_replay(model: Any) -> tuple[str, ...]:
+    """Move teacher action-side modules to CPU before VLM hidden-state replay.
+
+    Args:
+        model: Alpamayo teacher model.
+
+    Returns:
+        Names of modules that were moved and should be restored before another rollout.
+    """
+    moved: list[str] = []
+    for name in TEACHER_ACTION_MODULE_NAMES:
+        module = getattr(model, name, None)
+        if isinstance(module, torch.nn.Module):
+            module.to("cpu")
+            moved.append(name)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return tuple(moved)
+
+
+def restore_teacher_action_modules_after_replay(
+    model: Any,
+    module_names: tuple[str, ...],
+    device: torch.device,
+) -> None:
+    """Move teacher action-side modules back to the export device after replay.
+
+    Args:
+        model: Alpamayo teacher model.
+        module_names: Module names returned by ``offload_teacher_action_modules_for_replay``.
+        device: Device used for teacher rollout.
+    """
+    for name in module_names:
+        module = getattr(model, name, None)
+        if isinstance(module, torch.nn.Module):
+            module.to(device)
 
 
 def _trajectory_velocity_from_steps(trajectories: torch.Tensor, times: torch.Tensor) -> np.ndarray:
@@ -503,7 +549,9 @@ def export_teacher_clip(
             rollout = _rollout_for_export(model, model_inputs, config, device)
         tokenized_data = cast(dict[str, Any], model_inputs["tokenized_data"])
         prompt_input_ids = cast(torch.Tensor, tokenized_data["input_ids"])
-        generated_tokens = rollout.sequences[:, prompt_input_ids.shape[1] :]
+        prompt_length = prompt_input_ids.shape[1]
+        del prompt_input_ids
+        generated_tokens = rollout.sequences[:, prompt_length:]
         trace = extract_primary_top_k(
             generated_tokens,
             rollout.logits,
@@ -532,13 +580,18 @@ def export_teacher_clip(
         )
         del generated_tokens
         del rollout
+        del model_inputs
         torch.cuda.empty_cache()
-        hidden_states = replay_hidden_states_for_export(
-            model,
-            tokenized_data,
-            sequence_for_replay,
-            offset=primary_offset,
-        )
+        offloaded_modules = offload_teacher_action_modules_for_replay(model)
+        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+            hidden_states = replay_hidden_states_for_export(
+                model,
+                tokenized_data,
+                sequence_for_replay,
+                offset=primary_offset,
+            )
+        torch.cuda.empty_cache()
+        restore_teacher_action_modules_after_replay(model, offloaded_modules, device)
     except Exception as exc:
         raise TeacherDumpExportError(f"Clip {clip_id}: export failed: {exc}") from exc
 

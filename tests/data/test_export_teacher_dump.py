@@ -15,7 +15,9 @@ from src.data.export_teacher_dump import (
     conditioning_record_to_json,
     ensure_denoising_available,
     extract_primary_top_k,
+    offload_teacher_action_modules_for_replay,
     replay_hidden_states_for_export,
+    restore_teacher_action_modules_after_replay,
     select_hidden_states_until_offset,
 )
 from src.models.teacher_iface import AlpamayoConditioningRecord
@@ -49,9 +51,11 @@ def test_replay_hidden_states_uses_base_model_without_logits() -> None:
     class FakeBaseModel:
         def __init__(self) -> None:
             self.kwargs: dict[str, Any] = {}
+            self.grad_enabled = True
 
         def __call__(self, **kwargs: Any) -> SimpleNamespace:
             self.kwargs = kwargs
+            self.grad_enabled = torch.is_grad_enabled()
             hidden = torch.arange(12, dtype=torch.float32).reshape(1, 4, 3)
             return SimpleNamespace(last_hidden_state=hidden)
 
@@ -81,6 +85,33 @@ def test_replay_hidden_states_uses_base_model_without_logits() -> None:
     assert wrapper.model.kwargs["output_hidden_states"] is False
     assert wrapper.model.kwargs["use_cache"] is False
     assert wrapper.model.kwargs["pixel_values"] is tokenized_data["pixel_values"]
+    assert wrapper.model.grad_enabled is False
+
+
+def test_offload_teacher_action_modules_for_replay_skips_vlm() -> None:
+    teacher = SimpleNamespace(
+        vlm=torch.nn.Linear(1, 1),
+        expert=torch.nn.Linear(1, 1),
+        diffusion=torch.nn.Linear(1, 1),
+        action_in_proj=torch.nn.Linear(1, 1),
+        action_out_proj=torch.nn.Linear(1, 1),
+        action_space=torch.nn.Linear(1, 1),
+    )
+
+    moved = offload_teacher_action_modules_for_replay(teacher)
+
+    assert moved == (
+        "expert",
+        "diffusion",
+        "action_in_proj",
+        "action_out_proj",
+        "action_space",
+    )
+    assert all(next(getattr(teacher, name).parameters()).device.type == "cpu" for name in moved)
+
+    restore_teacher_action_modules_after_replay(teacher, moved, torch.device("cpu"))
+
+    assert all(next(getattr(teacher, name).parameters()).device.type == "cpu" for name in moved)
 
 
 def test_conditioning_metadata_json_round_trip() -> None:
