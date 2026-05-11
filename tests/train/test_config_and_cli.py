@@ -63,7 +63,7 @@ def test_stage2_config_loads_defaults() -> None:
     assert config.loss.alpha == 1.0
     assert config.loss.beta == 0.1
     assert config.model.lora_rank == 64
-    assert config.data.max_frames == 8
+    assert config.data.max_frames == 16
     assert config.data.image_min_pixels == 50176
     assert config.data.image_max_pixels == 200704
     assert config.data.test_split == "data/splits/test.json"
