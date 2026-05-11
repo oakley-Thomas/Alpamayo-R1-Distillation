@@ -22,6 +22,8 @@ class Stage2DataConfig:
     test_split: str
     image_prompt: str
     max_frames: int
+    image_min_pixels: int
+    image_max_pixels: int
     include_kv_cache: bool = False
 
 

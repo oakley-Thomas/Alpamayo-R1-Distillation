@@ -127,7 +127,15 @@ def build_stage2_processor(config: Stage2Config) -> Stage2Processor:
         auto_processor = transformers.AutoProcessor
     except ImportError as exc:
         raise RuntimeError("Stage 2 image preparation requires transformers.AutoProcessor") from exc
-    processor = auto_processor.from_pretrained(config.model.processor_name)
+    if config.data.image_min_pixels <= 0 or config.data.image_max_pixels <= 0:
+        raise ValueError("Stage 2 image pixel limits must be positive")
+    if config.data.image_min_pixels > config.data.image_max_pixels:
+        raise ValueError("Stage 2 image_min_pixels cannot exceed image_max_pixels")
+    processor = auto_processor.from_pretrained(
+        config.model.processor_name,
+        min_pixels=config.data.image_min_pixels,
+        max_pixels=config.data.image_max_pixels,
+    )
     return cast(Stage2Processor, processor)
 
 
