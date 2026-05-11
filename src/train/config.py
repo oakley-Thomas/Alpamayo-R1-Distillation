@@ -91,6 +91,78 @@ class Stage2Config:
     outputs: Stage2OutputConfig
 
 
+@dataclass(frozen=True)
+class Stage3DataConfig:
+    """Data locations for Stage 3."""
+
+    teacher_dump_root: str
+    train_split: str
+    val_split: str
+    test_split: str
+    hidden_cache_dir: str
+
+
+@dataclass(frozen=True)
+class Stage3ModelConfig:
+    """Flow-matching Action Expert architecture options."""
+
+    teacher_hidden_dim: int | None
+    hidden_dim: int
+    ffn_dim: int
+    num_layers: int
+    num_heads: int
+    dropout: float
+
+
+@dataclass(frozen=True)
+class Stage3LossYamlConfig:
+    """Loss hyperparameters loaded from YAML."""
+
+    gamma: float
+
+
+@dataclass(frozen=True)
+class Stage3OptimizerConfig:
+    """Optimizer and scheduler hyperparameters for Stage 3."""
+
+    lr: float
+    weight_decay: float
+    warmup_fraction: float
+
+
+@dataclass(frozen=True)
+class Stage3TrainingConfig:
+    """Training loop controls for Stage 3."""
+
+    epochs: int
+    batch_size_clips: int
+    bf16: bool
+    require_cuda: bool
+    seed: int
+
+
+@dataclass(frozen=True)
+class Stage3OutputConfig:
+    """Output locations for Stage 3 artifacts."""
+
+    root: str
+    checkpoint_path: str
+    norm_stats_path: str
+    val_predictions_path: str
+
+
+@dataclass(frozen=True)
+class Stage3Config:
+    """Complete Stage 3 training configuration."""
+
+    data: Stage3DataConfig
+    model: Stage3ModelConfig
+    loss: Stage3LossYamlConfig
+    optimizer: Stage3OptimizerConfig
+    training: Stage3TrainingConfig
+    outputs: Stage3OutputConfig
+
+
 def _unwrap_optional(annotation: Any) -> Any:
     origin = get_origin(annotation)
     if origin is types.UnionType:
@@ -126,3 +198,13 @@ def load_stage2_config(path: str | Path) -> Stage2Config:
     if not isinstance(data, dict):
         raise ValueError(f"{config_path} must contain a mapping at the top level")
     return _coerce_dataclass(Stage2Config, data)
+
+
+def load_stage3_config(path: str | Path) -> Stage3Config:
+    """Load a Stage 3 YAML config into typed dataclasses."""
+    config_path = Path(path)
+    with config_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"{config_path} must contain a mapping at the top level")
+    return _coerce_dataclass(Stage3Config, data)

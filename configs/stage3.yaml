@@ -1,0 +1,30 @@
+data:
+  teacher_dump_root: data/teacher_dump
+  train_split: data/splits/train.json
+  val_split: data/splits/val.json
+  test_split: data/splits/test.json
+  hidden_cache_dir: outputs/stage2/student_hidden_cache
+model:
+  teacher_hidden_dim: null
+  hidden_dim: 768
+  ffn_dim: 3072
+  num_layers: 8
+  num_heads: 12
+  dropout: 0.1
+loss:
+  gamma: 0.5
+optimizer:
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_fraction: 0.05
+training:
+  epochs: 30
+  batch_size_clips: 1
+  bf16: true
+  require_cuda: true
+  seed: 42
+outputs:
+  root: outputs/stage3
+  checkpoint_path: outputs/stage3/action_expert.pt
+  norm_stats_path: outputs/stage3/traj_norm_stats.json
+  val_predictions_path: outputs/stage3/val_predictions.npz

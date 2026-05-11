@@ -14,8 +14,9 @@ from torch import nn
 
 from scripts.validate_teacher_dump import main as validate_main
 from src.data.teacher_dump import TeacherDumpDataset, collate_teacher_examples
+from src.eval.stage3 import Stage3EvalReport
 from src.models.student_vlm import StudentVLM
-from src.train.config import load_stage2_config
+from src.train.config import load_stage2_config, load_stage3_config
 from src.train.stage2 import (
     load_stage2_artifacts,
     prepare_stage2_model_inputs,
@@ -68,6 +69,18 @@ def test_stage2_config_loads_defaults() -> None:
     assert config.data.image_max_pixels == 200704
     assert config.data.test_split == "data/splits/test.json"
     assert config.model.processor_name == config.model.backbone_name
+
+
+def test_stage3_config_loads_defaults() -> None:
+    config = load_stage3_config("configs/stage3.yaml")
+    assert config.loss.gamma == 0.5
+    assert config.model.hidden_dim == 768
+    assert config.model.num_layers == 8
+    assert config.model.num_heads == 12
+    assert config.optimizer.lr == 0.0003
+    assert config.optimizer.warmup_fraction == 0.05
+    assert config.data.hidden_cache_dir == "outputs/stage2/student_hidden_cache"
+    assert config.outputs.checkpoint_path == "outputs/stage3/action_expert.pt"
 
 
 def test_validation_cli_passes_on_fixture(mini_dump: tuple[Path, Path]) -> None:
@@ -173,3 +186,43 @@ def test_load_stage2_artifacts_restores_hidden_adapter(tmp_path: Path) -> None:
         parameter.detach().abs().sum().item() > 0.0
         for parameter in model.hidden_adapter.parameters()
     )
+
+
+def test_train_stage3_cli_invokes_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import train_stage3
+
+    calls: list[str] = []
+
+    def fake_run_stage3_training(config_path: str) -> None:
+        calls.append(config_path)
+
+    monkeypatch.setattr(train_stage3, "run_stage3_training", fake_run_stage3_training)
+
+    assert train_stage3.main(["--config", "custom_stage3.yaml"]) == 0
+    assert calls == ["custom_stage3.yaml"]
+
+
+def test_eval_stage3_cli_invokes_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import eval_stage3
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_stage3_evaluation(**kwargs: object) -> Stage3EvalReport:
+        calls.append(kwargs)
+        return Stage3EvalReport(
+            split_file="val.json",
+            num_trajectories=1,
+            ade_m=0.0,
+            fde_m=0.0,
+            heading_continuity_rate=1.0,
+            latency_ms=None,
+            passes_ade=True,
+            passes_fde=True,
+            passes_heading_continuity=True,
+            passes_latency=None,
+        )
+
+    monkeypatch.setattr(eval_stage3, "run_stage3_evaluation", fake_run_stage3_evaluation)
+
+    assert eval_stage3.main(["--config", "custom_stage3.yaml"]) == 0
+    assert calls[0]["config_path"] == "custom_stage3.yaml"
