@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
+
+# CuBLAS reads this before torch is imported by the training module.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 from src.train.stage3 import run_stage3_training
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import pickle
 import random
 import subprocess
 import sys
+import warnings
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -154,7 +156,7 @@ def load_stage3_checkpoint(
 ) -> TrajectoryNormStats:
     """Load Action Expert weights and return saved trajectory stats."""
     source = Path(checkpoint_path)
-    checkpoint_obj = torch.load(source, map_location=map_location)
+    checkpoint_obj = _load_stage3_checkpoint_object(source, map_location)
     if not isinstance(checkpoint_obj, dict):
         raise RuntimeError(f"{source} did not contain a Stage 3 checkpoint")
     checkpoint = cast(dict[str, object], checkpoint_obj)
@@ -250,8 +252,51 @@ def _rng_state() -> dict[str, object]:
     return {
         "torch": torch.get_rng_state(),
         "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
-        "numpy": np.random.get_state(),
-        "python": random.getstate(),
+        "numpy": _numpy_rng_state(),
+        "python": _python_rng_state(),
+    }
+
+
+def _load_stage3_checkpoint_object(
+    source: Path,
+    map_location: str | torch.device,
+) -> object:
+    try:
+        return torch.load(source, map_location=map_location, weights_only=True)
+    except pickle.UnpicklingError as error:
+        if not _is_weights_only_unpickling_error(error):
+            raise
+        warnings.warn(
+            f"{source} uses the legacy Stage 3 checkpoint pickle format; loading it with "
+            "weights_only=False. Only evaluate checkpoints from trusted local training runs.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return torch.load(source, map_location=map_location, weights_only=False)
+
+
+def _is_weights_only_unpickling_error(error: pickle.UnpicklingError) -> bool:
+    message = str(error)
+    return "Weights only load failed" in message or "WeightsUnpickler" in message
+
+
+def _numpy_rng_state() -> dict[str, object]:
+    state = cast(tuple[str, np.ndarray[Any, Any], int, int, float], np.random.get_state())
+    return {
+        "bit_generator": str(state[0]),
+        "keys": state[1].tolist(),
+        "position": int(state[2]),
+        "has_gauss": int(state[3]),
+        "cached_gaussian": float(state[4]),
+    }
+
+
+def _python_rng_state() -> dict[str, object]:
+    version, state, gauss = random.getstate()
+    return {
+        "version": int(version),
+        "state": list(state),
+        "gauss": None if gauss is None else float(gauss),
     }
 
 

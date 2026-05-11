@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+
+# CuBLAS reads this before torch is imported by the evaluation module.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 from src.eval.stage3 import run_stage3_evaluation, write_stage3_eval_report
 
