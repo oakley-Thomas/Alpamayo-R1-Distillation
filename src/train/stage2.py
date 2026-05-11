@@ -102,6 +102,7 @@ def build_stage2_model(config: Stage2Config, teacher_hidden_dim: int) -> Student
             lora_alpha=config.model.lora_alpha,
             lora_dropout=config.model.lora_dropout,
             compute_dtype=resolve_stage2_compute_dtype(config),
+            gradient_checkpointing=config.training.gradient_checkpointing,
         ),
         teacher_hidden_dim=teacher_hidden_dim,
     )
@@ -135,12 +136,19 @@ def _load_rgb_frame(path: Path) -> Image.Image:
         return image.convert("RGB")
 
 
-def _select_frame_paths(frame_paths: list[Path], max_frames: int) -> list[Path]:
+def select_stage2_frame_paths(frame_paths: list[Path], max_frames: int) -> list[Path]:
+    """Select a bounded, evenly spaced set of frame paths for Stage 2 VLM input."""
     if max_frames <= 0:
         raise ValueError("Stage 2 max_frames must be positive")
     if len(frame_paths) <= max_frames:
         return frame_paths
-    return frame_paths[:max_frames]
+    if max_frames == 1:
+        return [frame_paths[0]]
+
+    last_index = len(frame_paths) - 1
+    return [
+        frame_paths[round(index * last_index / (max_frames - 1))] for index in range(max_frames)
+    ]
 
 
 def _processor_outputs_for_example(
@@ -149,7 +157,7 @@ def _processor_outputs_for_example(
     prompt: str,
     max_frames: int,
 ) -> dict[str, torch.Tensor]:
-    selected_paths = _select_frame_paths(frame_paths, max_frames)
+    selected_paths = select_stage2_frame_paths(frame_paths, max_frames)
     images = [_load_rgb_frame(path) for path in selected_paths]
     content: list[dict[str, Any]] = [{"type": "image", "image": image} for image in images]
     content.append({"type": "text", "text": prompt})

@@ -38,6 +38,7 @@ class StudentVLMConfig:
     lora_alpha: int = 128
     lora_dropout: float = 0.05
     compute_dtype: torch.dtype = torch.bfloat16
+    gradient_checkpointing: bool = True
 
 
 class HiddenStateAdapter(nn.Module):
@@ -135,8 +136,13 @@ class StudentVLM(nn.Module):
                 torch_dtype=config.compute_dtype,
             ),
         )
+        _disable_use_cache(backbone)
         prepare_for_kbit = cast(Callable[..., nn.Module], prepare_model_for_kbit_training)
-        backbone = prepare_for_kbit(backbone, use_gradient_checkpointing=True)
+        backbone = _prepare_kbit_model(
+            prepare_for_kbit,
+            backbone,
+            use_gradient_checkpointing=config.gradient_checkpointing,
+        )
         _freeze_vision_modules(backbone)
         lora_config = LoraConfig(
             r=config.lora_rank,
@@ -148,6 +154,10 @@ class StudentVLM(nn.Module):
         )
         peft_model = cast(Callable[[nn.Module, Any], nn.Module], get_peft_model)
         backbone = peft_model(backbone, lora_config)
+        _disable_use_cache(backbone)
+        if config.gradient_checkpointing:
+            _enable_input_require_grads(backbone)
+            _enable_non_reentrant_gradient_checkpointing(backbone)
         student_hidden_dim = _infer_hidden_dim(backbone)
         return cls(
             backbone=backbone,
@@ -243,6 +253,47 @@ def _freeze_vision_modules(model: nn.Module) -> None:
         if isinstance(module, nn.Module):
             for parameter in module.parameters():
                 parameter.requires_grad = False
+
+
+def _prepare_kbit_model(
+    prepare_for_kbit: Callable[..., nn.Module],
+    backbone: nn.Module,
+    *,
+    use_gradient_checkpointing: bool,
+) -> nn.Module:
+    kwargs: dict[str, object] = {"use_gradient_checkpointing": use_gradient_checkpointing}
+    if use_gradient_checkpointing:
+        kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+    try:
+        return prepare_for_kbit(backbone, **kwargs)
+    except TypeError:
+        return prepare_for_kbit(
+            backbone,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+        )
+
+
+def _disable_use_cache(model: nn.Module) -> None:
+    config = cast(Any, getattr(model, "config", None))
+    if config is not None:
+        config.use_cache = False
+
+
+def _enable_input_require_grads(model: nn.Module) -> None:
+    enable_input_require_grads = getattr(model, "enable_input_require_grads", None)
+    if callable(enable_input_require_grads):
+        cast(Callable[[], None], enable_input_require_grads)()
+
+
+def _enable_non_reentrant_gradient_checkpointing(model: nn.Module) -> None:
+    gradient_checkpointing_enable = getattr(model, "gradient_checkpointing_enable", None)
+    if not callable(gradient_checkpointing_enable):
+        return
+    enable = cast(Callable[..., None], gradient_checkpointing_enable)
+    try:
+        enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    except TypeError:
+        enable()
 
 
 def _infer_hidden_dim(model: nn.Module) -> int:

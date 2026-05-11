@@ -21,6 +21,7 @@ from src.train.stage2 import (
     prepare_stage2_model_inputs,
     resolve_stage2_compute_dtype,
     save_stage2_artifacts,
+    select_stage2_frame_paths,
 )
 
 MakeDump = Callable[..., tuple[Path, Path]]
@@ -62,6 +63,7 @@ def test_stage2_config_loads_defaults() -> None:
     assert config.loss.alpha == 1.0
     assert config.loss.beta == 0.1
     assert config.model.lora_rank == 64
+    assert config.data.max_frames == 32
     assert config.data.test_split == "data/splits/test.json"
     assert config.model.processor_name == config.model.backbone_name
 
@@ -85,6 +87,19 @@ def test_prepare_stage2_model_inputs_without_processor(mini_dump: tuple[Path, Pa
     assert prepared["input_ids"].shape == (1, 3)
     assert prepared["hidden_position_mask"].shape == (1, 3)
     assert prepared["logit_position_mask"].shape == (1, 3)
+
+
+def test_select_frame_paths_samples_across_clip() -> None:
+    paths = [Path(f"frame_{index:04d}.jpg") for index in range(10)]
+
+    selected = select_stage2_frame_paths(paths, max_frames=4)
+
+    assert [path.name for path in selected] == [
+        "frame_0000.jpg",
+        "frame_0003.jpg",
+        "frame_0006.jpg",
+        "frame_0009.jpg",
+    ]
 
 
 def test_prepare_stage2_model_inputs_retokenizes_coc_text(
