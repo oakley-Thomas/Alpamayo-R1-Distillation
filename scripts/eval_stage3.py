@@ -21,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--predictions-output", default=None)
     parser.add_argument("--output", default=None)
     parser.add_argument("--measure-latency", action="store_true")
+    parser.add_argument("--measure-vram", action="store_true")
     args = parser.parse_args(argv)
 
     report = run_stage3_evaluation(
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_path=args.checkpoint,
         predictions_output=args.predictions_output,
         measure_latency=args.measure_latency,
+        measure_vram=args.measure_vram,
     )
     if args.output is not None:
         write_stage3_eval_report(report, args.output)

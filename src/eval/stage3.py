@@ -29,6 +29,8 @@ LATENCY_TARGET_MS = 50.0
 HEADING_JUMP_THRESHOLD_RADIANS = math.pi / 4.0
 LATENCY_WARMUP_TRIALS = 10
 LATENCY_MEASURE_TRIALS = 100
+VRAM_MEASURE_TRIALS = 100
+TRAJECTORY_HORIZON_SECONDS = 6.0
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,11 @@ class Stage3EvalReport:
     passes_fde: bool
     passes_heading_continuity: bool
     passes_latency: bool | None
+    ade_1s_m: float | None = None
+    ade_3s_m: float | None = None
+    ade_6s_m: float | None = None
+    fde_6s_m: float | None = None
+    vram_gb: float | None = None
 
     @property
     def passes_acceptance(self) -> bool:
@@ -88,6 +95,29 @@ def trajectory_ade(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Te
     return torch.sqrt(torch.sum(displacement.square(), dim=-1)).mean()
 
 
+def trajectory_ade_at_horizon(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    horizon_seconds: float,
+) -> torch.Tensor:
+    """Compute ADE over waypoints up to a time horizon.
+
+    Args:
+        predictions: Predicted trajectories, shape (B, 64, 3).
+        targets: Teacher trajectories, shape (B, 64, 3).
+        horizon_seconds: Horizon within the 6s, 64-waypoint trajectory.
+
+    Returns:
+        Mean L2 displacement error through the requested horizon.
+    """
+    _validate_trajectory_pair(predictions, targets)
+    waypoint_count = _waypoint_count_for_horizon(
+        waypoint_count=int(predictions.shape[1]),
+        horizon_seconds=horizon_seconds,
+    )
+    return trajectory_ade(predictions[:, :waypoint_count], targets[:, :waypoint_count])
+
+
 def trajectory_fde(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     """Compute final displacement error over x/y final waypoint positions.
 
@@ -101,6 +131,29 @@ def trajectory_fde(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Te
     _validate_trajectory_pair(predictions, targets)
     displacement = predictions[:, -1, :2] - targets[:, -1, :2]
     return torch.sqrt(torch.sum(displacement.square(), dim=-1)).mean()
+
+
+def trajectory_fde_at_horizon(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    horizon_seconds: float,
+) -> torch.Tensor:
+    """Compute FDE at a requested trajectory horizon.
+
+    Args:
+        predictions: Predicted trajectories, shape (B, 64, 3).
+        targets: Teacher trajectories, shape (B, 64, 3).
+        horizon_seconds: Horizon within the 6s, 64-waypoint trajectory.
+
+    Returns:
+        Mean L2 displacement error at the final waypoint for the horizon.
+    """
+    _validate_trajectory_pair(predictions, targets)
+    waypoint_count = _waypoint_count_for_horizon(
+        waypoint_count=int(predictions.shape[1]),
+        horizon_seconds=horizon_seconds,
+    )
+    return trajectory_fde(predictions[:, :waypoint_count], targets[:, :waypoint_count])
 
 
 def heading_continuity_rate(
@@ -133,23 +186,31 @@ def evaluate_stage3_predictions(
     targets: torch.Tensor,
     split_file: str,
     latency_ms: float | None = None,
+    vram_gb: float | None = None,
 ) -> Stage3EvalReport:
     """Compute Stage 3 acceptance metrics from prediction tensors."""
     _validate_trajectory_pair(predictions, targets)
-    ade = float(trajectory_ade(predictions, targets).item())
-    fde = float(trajectory_fde(predictions, targets).item())
+    ade_1s = float(trajectory_ade_at_horizon(predictions, targets, 1.0).item())
+    ade_3s = float(trajectory_ade_at_horizon(predictions, targets, 3.0).item())
+    ade_6s = float(trajectory_ade_at_horizon(predictions, targets, 6.0).item())
+    fde_6s = float(trajectory_fde_at_horizon(predictions, targets, 6.0).item())
     heading_rate = float(heading_continuity_rate(predictions).item())
     return Stage3EvalReport(
         split_file=split_file,
         num_trajectories=int(predictions.shape[0]),
-        ade_m=ade,
-        fde_m=fde,
+        ade_m=ade_6s,
+        fde_m=fde_6s,
         heading_continuity_rate=heading_rate,
         latency_ms=latency_ms,
-        passes_ade=ade <= ADE_TARGET_METERS,
-        passes_fde=fde <= FDE_TARGET_METERS,
+        passes_ade=ade_6s <= ADE_TARGET_METERS,
+        passes_fde=fde_6s <= FDE_TARGET_METERS,
         passes_heading_continuity=heading_rate >= HEADING_CONTINUITY_TARGET,
         passes_latency=None if latency_ms is None else latency_ms <= LATENCY_TARGET_MS,
+        ade_1s_m=ade_1s,
+        ade_3s_m=ade_3s,
+        ade_6s_m=ade_6s,
+        fde_6s_m=fde_6s,
+        vram_gb=vram_gb,
     )
 
 
@@ -237,6 +298,40 @@ def measure_stage3_latency_ms(
     return elapsed_seconds * 1000.0 / measure_trials
 
 
+def measure_stage3_vram_gb(
+    *,
+    model: FlowMatchingActionExpert,
+    dataset: Stage3TrajectoryDataset,
+    device: torch.device,
+    measure_trials: int = VRAM_MEASURE_TRIALS,
+) -> float:
+    """Measure peak CUDA memory allocated during single-step Action Expert inference."""
+    if device.type != "cuda":
+        raise RuntimeError("Stage 3 VRAM measurement requires a CUDA device")
+    if len(dataset) == 0:
+        raise ValueError("Cannot measure VRAM on an empty Stage 3 dataset")
+    if measure_trials <= 0:
+        raise ValueError("VRAM trial count must be positive")
+
+    loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_stage3_examples)
+    first_batch = next(iter(loader))
+    tensor_batch = _move_eval_batch(first_batch, device)
+    teacher = tensor_batch["teacher_trajectories"][:1]
+    hidden_states = tensor_batch["conditioning_hidden_states"][:1]
+    hidden_mask = tensor_batch["hidden_mask"][:1]
+    noise = torch.randn(teacher.shape, device=device, dtype=teacher.dtype)
+    model.eval()
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+    with torch.no_grad():
+        for _ in range(measure_trials):
+            model.single_step(noise, hidden_states, hidden_mask)
+        _synchronize_if_cuda(device)
+    bytes_per_gibibyte = 1024.0**3
+    return float(torch.cuda.max_memory_allocated(device) / bytes_per_gibibyte)
+
+
 def write_stage3_predictions(predictions: Stage3PredictionArrays, output_path: str | Path) -> None:
     """Write Stage 3 predictions and teacher targets to an NPZ file."""
     destination = Path(output_path)
@@ -266,6 +361,7 @@ def run_stage3_evaluation(
     checkpoint_path: str | None = None,
     predictions_output: str | None = None,
     measure_latency: bool = False,
+    measure_vram: bool = False,
 ) -> Stage3EvalReport:
     """Run Stage 3 evaluation from a saved checkpoint."""
     config = load_stage3_config(config_path)
@@ -302,11 +398,17 @@ def run_stage3_evaluation(
         if measure_latency
         else None
     )
+    vram_gb = (
+        measure_stage3_vram_gb(model=model, dataset=dataset, device=device)
+        if measure_vram
+        else None
+    )
     return evaluate_stage3_predictions(
         predictions=torch.as_tensor(prediction_arrays.predictions),
         targets=torch.as_tensor(prediction_arrays.targets),
         split_file=resolved_split,
         latency_ms=latency_ms,
+        vram_gb=vram_gb,
     )
 
 
@@ -315,6 +417,15 @@ def _validate_trajectory_pair(predictions: torch.Tensor, targets: torch.Tensor) 
         raise ValueError("predictions and targets must have matching shapes")
     if predictions.ndim != 3 or predictions.shape[-1] != 3:
         raise ValueError("trajectory tensors must have shape (B, 64, 3)")
+
+
+def _waypoint_count_for_horizon(*, waypoint_count: int, horizon_seconds: float) -> int:
+    if waypoint_count <= 0:
+        raise ValueError("waypoint_count must be positive")
+    if horizon_seconds <= 0.0:
+        raise ValueError("horizon_seconds must be positive")
+    scaled_count = math.ceil(waypoint_count * horizon_seconds / TRAJECTORY_HORIZON_SECONDS)
+    return min(max(scaled_count, 1), waypoint_count)
 
 
 def _move_eval_batch(batch: dict[str, object], device: torch.device) -> dict[str, torch.Tensor]:
