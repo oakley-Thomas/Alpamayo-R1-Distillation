@@ -50,30 +50,6 @@ def _check_finite(name: str, value: torch.Tensor) -> None:
         raise FloatingPointError(f"{name} became non-finite")
 
 
-def _coc_top_k_kl(
-    student_logits: torch.Tensor,
-    top_k_token_ids: torch.Tensor,
-    teacher_top_k_logits: torch.Tensor,
-    token_mask: torch.Tensor,
-    temperature: float,
-) -> torch.Tensor:
-    if student_logits.ndim != 3:
-        raise ValueError("student logits must have shape (B, L, V)")
-    if top_k_token_ids.shape != teacher_top_k_logits.shape:
-        raise ValueError("top_k_token_ids and top_k_logits must have matching shapes")
-    if top_k_token_ids.ndim != 3:
-        raise ValueError("top-k tensors must have shape (B, L, K)")
-    if student_logits.shape[:2] != top_k_token_ids.shape[:2]:
-        raise ValueError("student logits and top-k tensors must share batch/token dimensions")
-
-    student_selected = student_logits.gather(dim=-1, index=top_k_token_ids)
-    teacher_log_probs = F.log_softmax(teacher_top_k_logits / temperature, dim=-1)
-    teacher_probs = teacher_log_probs.exp()
-    student_log_probs = F.log_softmax(student_selected / temperature, dim=-1)
-    per_token_kl = (teacher_probs * (teacher_log_probs - student_log_probs)).sum(dim=-1)
-    return _masked_mean(per_token_kl, token_mask)
-
-
 def _hidden_alignment_loss(
     student_hidden: torch.Tensor,
     teacher_hidden: torch.Tensor,
@@ -96,6 +72,8 @@ def _lm_ce_loss(
     if student_logits.shape[:2] != token_ids.shape:
         raise ValueError("student logits and token_ids must share batch/token dimensions")
     vocab_size = student_logits.shape[-1]
+    if (token_ids < 0).any() or (token_ids >= vocab_size).any():
+        raise ValueError("lm_token_ids must be within the student vocabulary")
     flat_loss = F.cross_entropy(
         student_logits.reshape(-1, vocab_size),
         token_ids.reshape(-1),
@@ -112,11 +90,12 @@ def compute_stage2_loss(
     """Compute the Stage 2 distillation objective.
 
     Args:
-        batch: Tensor batch containing token IDs, top-k teacher logits/IDs,
-            teacher hidden states, and masks.
+        batch: Tensor batch containing Qwen LM token IDs, teacher hidden states,
+            and masks.
         outputs: Student logits of shape (B, L, V) and adapted hidden states of
             shape (B, T, D_h).
-        config: Loss weights and temperature.
+        config: Loss weights. ``temperature`` is retained for compatibility but
+            unused while teacher-token KL is disabled.
 
     Returns:
         Total loss and the named CoC-KL, hidden alignment, and LM-CE components.
@@ -124,13 +103,9 @@ def compute_stage2_loss(
     Raises:
         FloatingPointError: If any component becomes non-finite.
     """
-    coc_kl = _coc_top_k_kl(
-        student_logits=outputs.logits,
-        top_k_token_ids=batch["top_k_token_ids"],
-        teacher_top_k_logits=batch["top_k_logits"],
-        token_mask=batch["token_mask"],
-        temperature=config.temperature,
-    )
+    # Teacher top-k logits are in the teacher tokenizer space, not Qwen's
+    # vocabulary, so the KL term is intentionally disabled for this trainer.
+    coc_kl = outputs.logits.new_zeros(())
     hidden_align = _hidden_alignment_loss(
         student_hidden=outputs.adapted_hidden_states,
         teacher_hidden=batch["teacher_hidden_states"],
@@ -138,10 +113,10 @@ def compute_stage2_loss(
     )
     lm_ce = _lm_ce_loss(
         student_logits=outputs.logits,
-        token_ids=batch["token_ids"],
-        token_mask=batch["token_mask"],
+        token_ids=batch["lm_token_ids"],
+        token_mask=batch["lm_token_mask"],
     )
-    total = coc_kl + config.alpha * hidden_align + config.beta * lm_ce
+    total = config.alpha * hidden_align + config.beta * lm_ce
 
     for name, value in (
         ("coc_kl", coc_kl),

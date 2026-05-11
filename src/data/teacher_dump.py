@@ -31,6 +31,7 @@ class TeacherDumpExample(TypedDict):
 
     clip_id: str
     frame_paths: list[Path]
+    coc_text: str
     token_ids: torch.Tensor
     top_k_token_ids: torch.Tensor
     top_k_logits: torch.Tensor
@@ -426,6 +427,7 @@ class TeacherDumpDataset(Dataset[TeacherDumpExample]):
         return {
             "clip_id": manifest.clip_id,
             "frame_paths": list(manifest.frame_paths),
+            "coc_text": "\n".join(trace.texts),
             "token_ids": torch.as_tensor(trace.token_ids, dtype=torch.long),
             "top_k_token_ids": torch.as_tensor(trace.top_k_token_ids, dtype=torch.long),
             "top_k_logits": torch.as_tensor(trace.top_k_logits, dtype=torch.float32),
@@ -464,6 +466,7 @@ def collate_teacher_examples(examples: list[TeacherDumpExample]) -> dict[str, An
     return {
         "clip_id": [example["clip_id"] for example in examples],
         "frame_paths": [example["frame_paths"] for example in examples],
+        "coc_text": [example["coc_text"] for example in examples],
         "token_ids": pad_sequence(
             [example["token_ids"] for example in examples],
             batch_first=True,

@@ -21,13 +21,14 @@ from torch.utils.data import DataLoader
 from src.data.teacher_dump import TeacherDumpDataset, collate_teacher_examples
 from src.losses.stage2 import Stage2LossConfig, compute_stage2_loss
 from src.models.student_vlm import StudentVLM, StudentVLMConfig
-from src.models.teacher_iface import build_stage2_replay_masks
 from src.train.config import Stage2Config, load_stage2_config
 from src.utils.seed import set_seed
 
 
 class Stage2Processor(Protocol):
     """Runtime protocol for Hugging Face processors used by Stage 2."""
+
+    tokenizer: Any
 
     def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any) -> str: ...
 
@@ -202,6 +203,106 @@ def _batch_frame_paths_at(batch: Mapping[str, Any], batch_idx: int) -> list[Path
     return [Path(path) for path in paths if isinstance(path, (str, Path))]
 
 
+def _batch_coc_text_at(batch: Mapping[str, Any], batch_idx: int) -> str:
+    coc_texts = batch.get("coc_text")
+    if not isinstance(coc_texts, list):
+        raise TypeError("batch coc_text must be a list")
+    texts = cast(list[object], coc_texts)
+    text = texts[batch_idx]
+    if not isinstance(text, str):
+        raise TypeError("coc_text entries must be strings")
+    if not text.strip():
+        raise ValueError("coc_text entries must be non-empty")
+    return text
+
+
+def _tokenize_coc_text(tokenizer: Any, text: str) -> torch.Tensor:
+    if tokenizer is None or not callable(tokenizer):
+        raise RuntimeError("Stage 2 Qwen-token CE requires processor.tokenizer")
+    encoded = tokenizer(
+        text,
+        add_special_tokens=False,
+        return_tensors="pt",
+    )
+    if not isinstance(encoded, Mapping):
+        raise RuntimeError("Stage 2 tokenizer did not return a mapping")
+    encoded_mapping = cast(Mapping[str, object], encoded)
+    input_ids_obj = encoded_mapping.get("input_ids")
+    if not isinstance(input_ids_obj, torch.Tensor):
+        raise RuntimeError("Stage 2 tokenizer did not return input_ids")
+    if input_ids_obj.ndim == 2:
+        if input_ids_obj.shape[0] != 1:
+            raise ValueError("Stage 2 expects one CoC text per tokenizer call")
+        input_ids = input_ids_obj.squeeze(0)
+    elif input_ids_obj.ndim == 1:
+        input_ids = input_ids_obj
+    else:
+        raise ValueError("Stage 2 tokenizer input_ids must have shape (L,) or (1, L)")
+    if input_ids.numel() == 0:
+        raise ValueError("Stage 2 tokenizer produced no CoC tokens")
+    return input_ids.to(dtype=torch.long)
+
+
+def _hidden_position_mask_for_retokenized_replay(
+    *,
+    sequence_length: int,
+    teacher_hidden_length: int,
+    conditioning_meta: Mapping[str, Any] | None,
+) -> torch.Tensor:
+    if sequence_length <= 0:
+        raise ValueError("sequence_length must be positive")
+    if teacher_hidden_length <= 0:
+        raise ValueError("teacher_hidden_length must be positive")
+
+    if conditioning_meta is not None:
+        offset = conditioning_meta.get("traj_future_start_offset")
+        if not isinstance(offset, int) or offset < 0:
+            raise ValueError(
+                "conditioning metadata traj_future_start_offset must be a non-negative int"
+            )
+        if offset != teacher_hidden_length:
+            raise ValueError(
+                "teacher hidden length must match traj_future_start_offset; "
+                f"got {teacher_hidden_length} and {offset}"
+            )
+
+    if teacher_hidden_length > sequence_length:
+        raise ValueError(
+            "retokenized replay sequence is shorter than teacher hidden states; "
+            f"got sequence length {sequence_length} and hidden length {teacher_hidden_length}"
+        )
+
+    mask = torch.zeros(sequence_length, dtype=torch.bool)
+    mask[:teacher_hidden_length] = True
+    return mask
+
+
+def _causal_lm_position_mask(
+    *,
+    sequence_length: int,
+    prompt_length: int,
+    target_token_count: int,
+) -> torch.Tensor:
+    if sequence_length <= 0:
+        raise ValueError("sequence_length must be positive")
+    if prompt_length <= 0:
+        raise ValueError("prompt_length must be positive for causal LM replay")
+    if target_token_count <= 0:
+        raise ValueError("target_token_count must be positive")
+
+    logit_start = prompt_length - 1
+    logit_stop = logit_start + target_token_count
+    if logit_stop > sequence_length:
+        raise ValueError(
+            "retokenized replay is too short for causal LM labels; "
+            f"need position {logit_stop - 1}, length is {sequence_length}"
+        )
+
+    mask = torch.zeros(sequence_length, dtype=torch.bool)
+    mask[logit_start:logit_stop] = True
+    return mask
+
+
 def prepare_stage2_model_inputs(
     batch: Mapping[str, Any],
     config: Stage2Config,
@@ -226,11 +327,15 @@ def prepare_stage2_model_inputs(
     if token_ids.shape[0] != 1:
         raise ValueError("Stage 2 VLM input preparation expects one clip per batch")
 
-    valid_tokens = token_ids[0][token_mask[0]]
+    raw_valid_tokens = token_ids[0][token_mask[0]]
+    conditioning_meta = _conditioning_meta_at(batch, 0)
     if processor is None:
-        input_ids = valid_tokens.unsqueeze(0)
+        lm_token_ids = raw_valid_tokens
+        input_ids = lm_token_ids.unsqueeze(0)
         attention_mask = torch.ones_like(input_ids)
         model_kwargs: dict[str, torch.Tensor] = {}
+        hidden_position_mask = torch.ones(input_ids.shape[1], dtype=torch.bool)
+        logit_position_mask = torch.ones(input_ids.shape[1], dtype=torch.bool)
     else:
         processor_outputs = _processor_outputs_for_example(
             processor=processor,
@@ -240,22 +345,30 @@ def prepare_stage2_model_inputs(
         )
         prompt_input_ids = processor_outputs.pop("input_ids")
         prompt_attention_mask = processor_outputs.pop("attention_mask")
-        generated_attention_mask = torch.ones((1, valid_tokens.shape[0]), dtype=torch.long)
-        input_ids = torch.cat([prompt_input_ids, valid_tokens.unsqueeze(0)], dim=1)
+        lm_token_ids = _tokenize_coc_text(processor.tokenizer, _batch_coc_text_at(batch, 0))
+        generated_attention_mask = torch.ones((1, lm_token_ids.shape[0]), dtype=torch.long)
+        input_ids = torch.cat([prompt_input_ids, lm_token_ids.unsqueeze(0)], dim=1)
         attention_mask = torch.cat([prompt_attention_mask, generated_attention_mask], dim=1)
         model_kwargs = processor_outputs
+        hidden_position_mask = _hidden_position_mask_for_retokenized_replay(
+            sequence_length=int(input_ids.shape[1]),
+            teacher_hidden_length=int(hidden_mask[0].sum().item()),
+            conditioning_meta=conditioning_meta,
+        )
+        logit_position_mask = _causal_lm_position_mask(
+            sequence_length=int(input_ids.shape[1]),
+            prompt_length=int(prompt_input_ids.shape[1]),
+            target_token_count=int(lm_token_ids.shape[0]),
+        )
 
-    masks = build_stage2_replay_masks(
-        sequence_length=int(input_ids.shape[1]),
-        token_count=int(token_mask[0].sum().item()),
-        teacher_hidden_length=int(hidden_mask[0].sum().item()),
-        conditioning_meta=_conditioning_meta_at(batch, 0),
-    )
+    lm_token_mask = torch.ones_like(lm_token_ids, dtype=torch.bool)
     return {
         "input_ids": input_ids.to(device),
         "attention_mask": attention_mask.to(device),
-        "hidden_position_mask": masks.hidden_position_mask.unsqueeze(0).to(device),
-        "logit_position_mask": masks.logit_position_mask.unsqueeze(0).to(device),
+        "hidden_position_mask": hidden_position_mask.unsqueeze(0).to(device),
+        "logit_position_mask": logit_position_mask.unsqueeze(0).to(device),
+        "lm_token_ids": lm_token_ids.unsqueeze(0).to(device),
+        "lm_token_mask": lm_token_mask.unsqueeze(0).to(device),
         "model_kwargs": {key: value.to(device) for key, value in model_kwargs.items()},
     }
 
@@ -335,7 +448,7 @@ def cache_student_hidden_states(
 
     Args:
         model: Stage 2 student in eval mode.
-        dataset: Teacher dump dataset whose token IDs drive the replay.
+        dataset: Teacher dump dataset whose CoC text drives Qwen-token replay.
         output_dir: Destination for ``<clip_id>.npy`` cache files.
         device: Device used for model inference.
         config: Stage 2 config controlling image preparation.
@@ -405,6 +518,8 @@ def run_stage2_training(config_path: str | Path) -> None:
                 if isinstance(value, torch.Tensor)
             }
             prepared = prepare_stage2_model_inputs(batch, config, device, processor)
+            tensor_batch["lm_token_ids"] = prepared["lm_token_ids"]
+            tensor_batch["lm_token_mask"] = prepared["lm_token_mask"]
             outputs = model(
                 input_ids=prepared["input_ids"],
                 attention_mask=prepared["attention_mask"],

@@ -22,7 +22,7 @@ from src.train.stage2 import (
     prepare_stage2_model_inputs,
 )
 
-COC_TOP1_TARGET = 0.70
+COC_TOKEN_ACCURACY_TARGET = 0.70
 HIDDEN_COSINE_TARGET = 0.85
 TRACE_PARSEABILITY_TARGET = 1.0
 
@@ -33,17 +33,21 @@ class Stage2EvalReport:
 
     split_file: str
     num_clips: int
-    coc_top1_agreement: float
+    coc_token_accuracy: float
     hidden_cosine_similarity: float
     trace_parseability_rate: float
-    passes_coc_top1: bool
+    passes_coc_token_accuracy: bool
     passes_hidden_cosine: bool
     passes_trace_parseability: bool
 
     @property
     def passes_acceptance(self) -> bool:
         """Return whether all Stage 2 acceptance metrics pass."""
-        return self.passes_coc_top1 and self.passes_hidden_cosine and self.passes_trace_parseability
+        return (
+            self.passes_coc_token_accuracy
+            and self.passes_hidden_cosine
+            and self.passes_trace_parseability
+        )
 
     def to_json_dict(self) -> dict[str, bool | float | int | str]:
         """Return a JSON-serializable report dictionary."""
@@ -58,33 +62,32 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (values * mask).sum() / denominator
 
 
-def coc_top1_agreement(
+def qwen_coc_token_accuracy(
     student_logits: torch.Tensor,
-    teacher_top_k_token_ids: torch.Tensor,
+    lm_token_ids: torch.Tensor,
     token_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute CoC token top-1 agreement against teacher top-k IDs.
+    """Compute CoC token accuracy against Qwen-tokenized teacher text.
 
     Args:
         student_logits: Student logits selected at CoC positions, shape (B, T, V).
-        teacher_top_k_token_ids: Teacher top-k token IDs, shape (B, T, K).
+        lm_token_ids: Qwen-tokenized teacher text labels, shape (B, T).
         token_mask: Valid CoC token mask, shape (B, T).
 
     Returns:
-        Mean top-1 agreement over valid CoC tokens, scalar tensor.
+        Mean token accuracy over valid CoC tokens, scalar tensor.
     """
     if student_logits.ndim != 3:
         raise ValueError("student_logits must have shape (B, T, V)")
-    if teacher_top_k_token_ids.ndim != 3:
-        raise ValueError("teacher_top_k_token_ids must have shape (B, T, K)")
-    if student_logits.shape[:2] != teacher_top_k_token_ids.shape[:2]:
-        raise ValueError("student and teacher token dimensions must match")
+    if lm_token_ids.ndim != 2:
+        raise ValueError("lm_token_ids must have shape (B, T)")
+    if student_logits.shape[:2] != lm_token_ids.shape:
+        raise ValueError("student logits and Qwen token labels must share batch/token dimensions")
     if token_mask.shape != student_logits.shape[:2]:
         raise ValueError("token_mask must have shape (B, T)")
 
     student_top1 = student_logits.argmax(dim=-1)
-    teacher_top1 = teacher_top_k_token_ids[..., 0]
-    matches = (student_top1 == teacher_top1).to(dtype=student_logits.dtype)
+    matches = (student_top1 == lm_token_ids).to(dtype=student_logits.dtype)
     return _masked_mean(matches, token_mask)
 
 
@@ -191,7 +194,7 @@ def evaluate_stage2_model(
     model.eval()
     total_tokens = 0
     total_hidden_positions = 0
-    weighted_coc_top1 = 0.0
+    weighted_coc_accuracy = 0.0
     weighted_hidden_cosine = 0.0
     parseable_traces = 0
 
@@ -204,6 +207,8 @@ def evaluate_stage2_model(
                 if isinstance(value, torch.Tensor)
             }
             prepared = prepare_stage2_model_inputs(batch, config, device, processor)
+            lm_token_ids = prepared["lm_token_ids"]
+            lm_token_mask = prepared["lm_token_mask"]
             output_obj = model(
                 input_ids=prepared["input_ids"],
                 attention_mask=prepared["attention_mask"],
@@ -213,12 +218,12 @@ def evaluate_stage2_model(
             )
             outputs = cast(Stage2ModelOutput, output_obj)
 
-            token_count = int(tensor_batch["token_mask"].sum().item())
+            token_count = int(lm_token_mask.sum().item())
             hidden_count = int(tensor_batch["hidden_mask"].sum().item())
-            coc_top1 = coc_top1_agreement(
+            coc_accuracy = qwen_coc_token_accuracy(
                 outputs.logits,
-                tensor_batch["top_k_token_ids"],
-                tensor_batch["token_mask"],
+                lm_token_ids,
+                lm_token_mask,
             )
             hidden_cosine = hidden_cosine_similarity(
                 outputs.adapted_hidden_states,
@@ -228,7 +233,7 @@ def evaluate_stage2_model(
             predicted_ids = outputs.logits.argmax(dim=-1)[0, :token_count]
             decoded_trace = decode_coc_tokens(processor, predicted_ids)
 
-            weighted_coc_top1 += float(coc_top1.item()) * token_count
+            weighted_coc_accuracy += float(coc_accuracy.item()) * token_count
             weighted_hidden_cosine += float(hidden_cosine.item()) * hidden_count
             total_tokens += token_count
             total_hidden_positions += hidden_count
@@ -239,16 +244,16 @@ def evaluate_stage2_model(
     if total_hidden_positions == 0:
         raise ValueError("Stage 2 eval found no valid hidden states")
 
-    coc_value = weighted_coc_top1 / total_tokens
+    coc_value = weighted_coc_accuracy / total_tokens
     hidden_value = weighted_hidden_cosine / total_hidden_positions
     parseability_value = parseable_traces / len(dataset)
     return Stage2EvalReport(
         split_file=str(dataset.split_file),
         num_clips=len(dataset),
-        coc_top1_agreement=coc_value,
+        coc_token_accuracy=coc_value,
         hidden_cosine_similarity=hidden_value,
         trace_parseability_rate=parseability_value,
-        passes_coc_top1=coc_value >= COC_TOP1_TARGET,
+        passes_coc_token_accuracy=coc_value >= COC_TOKEN_ACCURACY_TARGET,
         passes_hidden_cosine=hidden_value >= HIDDEN_COSINE_TARGET,
         passes_trace_parseability=parseability_value >= TRACE_PARSEABILITY_TARGET,
     )

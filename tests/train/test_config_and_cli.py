@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
+from PIL import Image
 from torch import nn
 
 from scripts.validate_teacher_dump import main as validate_main
@@ -22,6 +24,37 @@ from src.train.stage2 import (
 )
 
 MakeDump = Callable[..., tuple[Path, Path]]
+
+
+class FakeTokenizer:
+    """Tokenizer stub that exposes deterministic Qwen-token labels."""
+
+    def __init__(self, token_ids: list[int]) -> None:
+        self.token_ids = token_ids
+        self.seen_text: str | None = None
+
+    def __call__(self, text: str, **_kwargs: object) -> dict[str, torch.Tensor]:
+        """Return configured token IDs for any text."""
+        self.seen_text = text
+        return {"input_ids": torch.tensor([self.token_ids], dtype=torch.long)}
+
+
+class FakeStage2Processor:
+    """Processor stub with separate prompt and CoC tokenization paths."""
+
+    def __init__(self, tokenizer: FakeTokenizer) -> None:
+        self.tokenizer = tokenizer
+
+    def apply_chat_template(self, messages: list[dict[str, Any]], **_kwargs: object) -> str:
+        """Return a deterministic prompt string."""
+        return "prompt"
+
+    def __call__(self, **_kwargs: object) -> dict[str, torch.Tensor]:
+        """Return deterministic prompt token IDs."""
+        return {
+            "input_ids": torch.tensor([[11, 12, 13]], dtype=torch.long),
+            "attention_mask": torch.ones((1, 3), dtype=torch.long),
+        }
 
 
 def test_stage2_config_loads_defaults() -> None:
@@ -52,6 +85,32 @@ def test_prepare_stage2_model_inputs_without_processor(mini_dump: tuple[Path, Pa
     assert prepared["input_ids"].shape == (1, 3)
     assert prepared["hidden_position_mask"].shape == (1, 3)
     assert prepared["logit_position_mask"].shape == (1, 3)
+
+
+def test_prepare_stage2_model_inputs_retokenizes_coc_text(
+    mini_dump: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dump_root, split_file = mini_dump
+    dataset = TeacherDumpDataset(dump_root, split_file)
+    batch = collate_teacher_examples([dataset[0]])
+    config = load_stage2_config("configs/stage2.yaml")
+    tokenizer = FakeTokenizer([101, 102])
+    processor = FakeStage2Processor(tokenizer)
+
+    def fake_load_rgb_frame(_path: Path) -> Image.Image:
+        return Image.new("RGB", (1, 1))
+
+    monkeypatch.setattr("src.train.stage2._load_rgb_frame", fake_load_rgb_frame)
+
+    prepared = prepare_stage2_model_inputs(batch, config, torch.device("cpu"), processor)
+
+    assert tokenizer.seen_text == "yield to pedestrian"
+    assert prepared["input_ids"].tolist() == [[11, 12, 13, 101, 102]]
+    assert prepared["lm_token_ids"].tolist() == [[101, 102]]
+    assert prepared["lm_token_mask"].tolist() == [[True, True]]
+    assert prepared["hidden_position_mask"].tolist() == [[True, True, True, False, False]]
+    assert prepared["logit_position_mask"].tolist() == [[False, False, True, True, False]]
 
 
 def test_stage2_compute_dtype_uses_fp16_when_bf16_disabled() -> None:

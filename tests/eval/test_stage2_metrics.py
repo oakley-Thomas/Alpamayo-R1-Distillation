@@ -9,23 +9,23 @@ from torch import nn
 
 from src.data.teacher_dump import TeacherDumpDataset
 from src.eval.stage2 import (
-    coc_top1_agreement,
     evaluate_stage2_model,
     hidden_cosine_similarity,
+    qwen_coc_token_accuracy,
     trace_is_parseable,
 )
 from src.losses.stage2 import Stage2ModelOutput
 from src.train.config import load_stage2_config
 
 
-def test_coc_top1_agreement_uses_valid_tokens() -> None:
+def test_qwen_coc_token_accuracy_uses_valid_tokens() -> None:
     logits = torch.zeros((1, 3, 8))
     logits[0, 0, 2] = 1.0
     logits[0, 1, 4] = 1.0
     logits[0, 2, 7] = 1.0
-    top_k_ids = torch.tensor([[[2, 0], [5, 0], [7, 0]]])
+    lm_token_ids = torch.tensor([[2, 5, 7]])
     token_mask = torch.tensor([[True, True, False]])
-    assert coc_top1_agreement(logits, top_k_ids, token_mask).item() == 0.5
+    assert qwen_coc_token_accuracy(logits, lm_token_ids, token_mask).item() == 0.5
 
 
 def test_hidden_cosine_similarity_is_one_for_equal_tensors() -> None:
@@ -55,7 +55,8 @@ class FakeStage2EvalModel(nn.Module):
         token_count = int(logit_position_mask.sum().item())
         hidden_count = int(hidden_position_mask.sum().item())
         logits = torch.zeros((1, token_count, 32))
-        for index, token_id in enumerate(input_ids[0, :token_count]):
+        label_ids = input_ids[0][logit_position_mask[0]]
+        for index, token_id in enumerate(label_ids):
             logits[0, index, int(token_id.item())] = 1.0
         hidden = torch.arange(hidden_count * 4, dtype=torch.float32).reshape(1, hidden_count, 4)
         return Stage2ModelOutput(logits=logits, adapted_hidden_states=hidden)
@@ -73,6 +74,6 @@ def test_evaluate_stage2_model_reports_acceptance_metrics(mini_dump: tuple[Path,
         processor=None,
     )
     assert report.num_clips == 2
-    assert report.coc_top1_agreement == 1.0
+    assert report.coc_token_accuracy == 1.0
     assert report.trace_parseability_rate == 1.0
-    assert report.passes_coc_top1
+    assert report.passes_coc_token_accuracy
