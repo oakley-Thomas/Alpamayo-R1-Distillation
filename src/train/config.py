@@ -100,7 +100,8 @@ class Stage3DataConfig:
     train_split: str
     val_split: str
     test_split: str
-    hidden_cache_dir: str
+    conditioning_source: str
+    hidden_cache_dir: str | None
 
 
 @dataclass(frozen=True)

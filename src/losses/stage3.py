@@ -103,7 +103,7 @@ def compute_stage3_loss(
     Args:
         model: Action Expert returning velocity predictions, shape (B, 64, 3).
         batch: Tensor batch containing normalized teacher trajectories and
-            frozen Stage 2 hidden states.
+            frozen conditioning hidden states.
         config: Loss weight for direct single-step trajectory regression.
         generator: Optional RNG used when ``sample`` is not provided.
         sample: Optional pre-sampled rectified-flow inputs for deterministic tests.
@@ -117,7 +117,7 @@ def compute_stage3_loss(
     if config.gamma < 0.0:
         raise ValueError("Stage 3 gamma must be non-negative")
     trajectories = batch["teacher_trajectories"]
-    hidden_states = batch["student_hidden_states"]
+    hidden_states = batch["conditioning_hidden_states"]
     hidden_mask = batch.get("hidden_mask")
     flow_sample = sample or sample_rectified_flow_inputs(trajectories, generator=generator)
     _validate_sample(flow_sample, trajectories)

@@ -183,7 +183,7 @@ def generate_stage3_predictions(
             )
             predicted = model.single_step(
                 noise,
-                tensor_batch["student_hidden_states"],
+                tensor_batch["conditioning_hidden_states"],
                 tensor_batch["hidden_mask"],
             )
             predictions.append(
@@ -220,7 +220,7 @@ def measure_stage3_latency_ms(
     first_batch = next(iter(loader))
     tensor_batch = _move_eval_batch(first_batch, device)
     teacher = tensor_batch["teacher_trajectories"][:1]
-    hidden_states = tensor_batch["student_hidden_states"][:1]
+    hidden_states = tensor_batch["conditioning_hidden_states"][:1]
     hidden_mask = tensor_batch["hidden_mask"][:1]
     noise = torch.randn(teacher.shape, device=device, dtype=teacher.dtype)
     model.eval()
@@ -276,6 +276,7 @@ def run_stage3_evaluation(
         teacher_dump_root=config.data.teacher_dump_root,
         split_file=resolved_split,
         hidden_cache_dir=config.data.hidden_cache_dir,
+        conditioning_source=config.data.conditioning_source,
     )
     model = build_stage3_model(config, teacher_hidden_dim=raw_dataset.hidden_dim).to(device)
     norm_stats = load_stage3_checkpoint(model, resolved_checkpoint, map_location=device)
@@ -284,6 +285,7 @@ def run_stage3_evaluation(
         split_file=resolved_split,
         hidden_cache_dir=config.data.hidden_cache_dir,
         norm_stats=norm_stats,
+        conditioning_source=config.data.conditioning_source,
     )
     prediction_arrays = generate_stage3_predictions(
         model=model,
@@ -317,7 +319,7 @@ def _validate_trajectory_pair(predictions: torch.Tensor, targets: torch.Tensor) 
 
 def _move_eval_batch(batch: dict[str, object], device: torch.device) -> dict[str, torch.Tensor]:
     tensor_batch: dict[str, torch.Tensor] = {}
-    for key in ("teacher_trajectories", "student_hidden_states", "hidden_mask"):
+    for key in ("teacher_trajectories", "conditioning_hidden_states", "hidden_mask"):
         value = batch.get(key)
         if not isinstance(value, torch.Tensor):
             raise TypeError(f"Stage 3 batch field {key} must be a tensor")

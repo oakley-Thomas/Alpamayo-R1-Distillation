@@ -3,8 +3,8 @@ data:
   train_split: data/splits/train.json
   val_split: data/splits/val.json
   test_split: data/splits/test.json
-  conditioning_source: student_cache
-  hidden_cache_dir: outputs/stage2/student_hidden_cache
+  conditioning_source: teacher_dump
+  hidden_cache_dir: null
 model:
   teacher_hidden_dim: null
   hidden_dim: 768
@@ -25,7 +25,7 @@ training:
   require_cuda: true
   seed: 42
 outputs:
-  root: outputs/stage3
-  checkpoint_path: outputs/stage3/action_expert.pt
-  norm_stats_path: outputs/stage3/traj_norm_stats.json
-  val_predictions_path: outputs/stage3/val_predictions.npz
+  root: outputs/stage3_teacher_hidden
+  checkpoint_path: outputs/stage3_teacher_hidden/action_expert.pt
+  norm_stats_path: outputs/stage3_teacher_hidden/traj_norm_stats.json
+  val_predictions_path: outputs/stage3_teacher_hidden/val_predictions.npz

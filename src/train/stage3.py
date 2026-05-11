@@ -176,6 +176,7 @@ def run_stage3_training(config_path: str | Path) -> None:
         teacher_dump_root=config.data.teacher_dump_root,
         split_file=config.data.train_split,
         hidden_cache_dir=config.data.hidden_cache_dir,
+        conditioning_source=config.data.conditioning_source,
     )
     norm_stats = compute_trajectory_norm_stats(raw_train_dataset)
     norm_stats.save(config.outputs.norm_stats_path)
@@ -184,12 +185,14 @@ def run_stage3_training(config_path: str | Path) -> None:
         split_file=config.data.train_split,
         hidden_cache_dir=config.data.hidden_cache_dir,
         norm_stats=norm_stats,
+        conditioning_source=config.data.conditioning_source,
     )
     val_dataset = Stage3TrajectoryDataset(
         teacher_dump_root=config.data.teacher_dump_root,
         split_file=config.data.val_split,
         hidden_cache_dir=config.data.hidden_cache_dir,
         norm_stats=norm_stats,
+        conditioning_source=config.data.conditioning_source,
     )
 
     model = build_stage3_model(config, teacher_hidden_dim=train_dataset.hidden_dim).to(device)
@@ -256,7 +259,7 @@ def _move_stage3_batch(
     batch: Mapping[str, object], device: torch.device
 ) -> dict[str, torch.Tensor]:
     tensor_batch: dict[str, torch.Tensor] = {}
-    for key in ("teacher_trajectories", "student_hidden_states", "hidden_mask"):
+    for key in ("teacher_trajectories", "conditioning_hidden_states", "hidden_mask"):
         value = batch.get(key)
         if not isinstance(value, torch.Tensor):
             raise TypeError(f"Stage 3 batch field {key} must be a tensor")
@@ -301,7 +304,7 @@ def _write_stage3_predictions(
             )
             predicted = model.single_step(
                 noise,
-                tensor_batch["student_hidden_states"],
+                tensor_batch["conditioning_hidden_states"],
                 tensor_batch["hidden_mask"],
             )
             predictions.append(

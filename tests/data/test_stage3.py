@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from src.data.stage3 import (
+    TEACHER_DUMP_CONDITIONING,
     Stage3TrajectoryDataset,
     TrajectoryNormStats,
     collate_stage3_examples,
@@ -39,8 +40,27 @@ def test_stage3_dataset_loads_hidden_cache(mini_dump: tuple[Path, Path], tmp_pat
     assert dataset.hidden_dim == 4
     assert example["clip_id"] == "clip-a"
     assert example["teacher_trajectories"].shape == (16, 64, 3)
-    assert example["student_hidden_states"].shape == (3, 4)
+    assert example["conditioning_hidden_states"].shape == (3, 4)
     assert torch.equal(example["hidden_mask"], torch.ones(3, dtype=torch.bool))
+
+
+def test_stage3_dataset_loads_teacher_dump_hidden_states(
+    mini_dump: tuple[Path, Path],
+) -> None:
+    dump_root, split_file = mini_dump
+
+    dataset = Stage3TrajectoryDataset(
+        dump_root,
+        split_file,
+        conditioning_source=TEACHER_DUMP_CONDITIONING,
+    )
+    example = dataset[0]
+
+    assert len(dataset) == 2
+    assert dataset.hidden_dim == 4
+    assert example["clip_id"] == "clip-a"
+    assert example["teacher_trajectories"].shape == (16, 64, 3)
+    assert example["conditioning_hidden_states"].shape == (3, 4)
 
 
 def test_stage3_dataset_rejects_missing_hidden_cache(
@@ -53,6 +73,40 @@ def test_stage3_dataset_rejects_missing_hidden_cache(
 
     with pytest.raises(ClipValidationError, match=r"clip-a.*student hidden cache"):
         Stage3TrajectoryDataset(dump_root, split_file, cache_dir)
+
+
+def test_stage3_dataset_rejects_missing_teacher_dump_hidden_states(
+    make_dump: MakeDump,
+) -> None:
+    dump_root, split_file = make_dump(corruption="missing_hidden")
+
+    with pytest.raises(ClipValidationError, match=r"clip-a.*hidden_states.npy"):
+        Stage3TrajectoryDataset(
+            dump_root,
+            split_file,
+            conditioning_source=TEACHER_DUMP_CONDITIONING,
+        )
+
+
+def test_stage3_dataset_rejects_malformed_teacher_dump_hidden_states(
+    make_dump: MakeDump,
+) -> None:
+    dump_root, split_file = make_dump()
+    (dump_root / "clip-a" / "hidden_states.npy").write_bytes(b"not-a-numpy-array")
+
+    with pytest.raises(ClipValidationError, match=r"clip-a.*hidden_states.npy"):
+        Stage3TrajectoryDataset(
+            dump_root,
+            split_file,
+            conditioning_source=TEACHER_DUMP_CONDITIONING,
+        )
+
+
+def test_stage3_dataset_rejects_missing_cache_dir(make_dump: MakeDump) -> None:
+    dump_root, split_file = make_dump()
+
+    with pytest.raises(ValueError, match="hidden_cache_dir"):
+        Stage3TrajectoryDataset(dump_root, split_file)
 
 
 def test_trajectory_norm_stats_round_trip(tmp_path: Path) -> None:
@@ -96,5 +150,5 @@ def test_collate_stage3_examples_repeats_hidden_states(
 
     assert batch["clip_id"] == ["clip-a"] * 16
     assert batch["teacher_trajectories"].shape == (16, 64, 3)
-    assert batch["student_hidden_states"].shape == (16, 3, 4)
+    assert batch["conditioning_hidden_states"].shape == (16, 3, 4)
     assert batch["hidden_mask"].shape == (16, 3)

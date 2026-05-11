@@ -65,7 +65,7 @@ def test_stage2_config_loads_defaults() -> None:
     assert config.loss.alpha == 1.0
     assert config.loss.beta == 0.1
     assert config.model.lora_rank == 64
-    assert config.data.max_frames == 16
+    assert config.data.max_frames == 24
     assert config.data.image_min_pixels == 50176
     assert config.data.image_max_pixels == 200704
     assert config.data.test_split == "data/splits/test.json"
@@ -81,8 +81,17 @@ def test_stage3_config_loads_defaults() -> None:
     assert config.model.num_heads == 12
     assert config.optimizer.lr == 0.0003
     assert config.optimizer.warmup_fraction == 0.05
+    assert config.data.conditioning_source == "student_cache"
     assert config.data.hidden_cache_dir == "outputs/stage2/student_hidden_cache"
     assert config.outputs.checkpoint_path == "outputs/stage3/action_expert.pt"
+
+
+def test_stage3_teacher_hidden_config_loads_defaults() -> None:
+    config = load_stage3_config("configs/stage3_teacher_hidden.yaml")
+    assert config.data.conditioning_source == "teacher_dump"
+    assert config.data.hidden_cache_dir is None
+    assert config.outputs.root == "outputs/stage3_teacher_hidden"
+    assert config.outputs.checkpoint_path == "outputs/stage3_teacher_hidden/action_expert.pt"
 
 
 def test_validation_cli_passes_on_fixture(mini_dump: tuple[Path, Path]) -> None:

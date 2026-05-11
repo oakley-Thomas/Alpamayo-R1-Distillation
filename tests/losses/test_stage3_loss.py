@@ -41,7 +41,7 @@ class ConstantVelocityModel(nn.Module):
 def _batch() -> dict[str, torch.Tensor]:
     return {
         "teacher_trajectories": torch.ones((2, 64, 3)),
-        "student_hidden_states": torch.randn(2, 3, 4),
+        "conditioning_hidden_states": torch.randn(2, 3, 4),
         "hidden_mask": torch.ones((2, 3), dtype=torch.bool),
     }
 

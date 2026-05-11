@@ -66,6 +66,36 @@ def test_action_expert_rejects_invalid_shapes() -> None:
         model(x_t, t, hidden_states)
 
 
+def test_action_expert_rejects_invalid_t_shape() -> None:
+    model = _small_model()
+    x_t = torch.randn(2, 64, 3)
+    t = torch.tensor([[0.2], [0.4]])
+    hidden_states = torch.randn(2, 5, 4)
+
+    with pytest.raises(ValueError, match="t must have shape"):
+        model(x_t, t, hidden_states)
+
+
+def test_action_expert_rejects_invalid_hidden_dim() -> None:
+    model = _small_model()
+    x_t = torch.randn(2, 64, 3)
+    t = torch.tensor([0.2, 0.4])
+    hidden_states = torch.randn(2, 5, 5)
+
+    with pytest.raises(ValueError, match="teacher_hidden_dim"):
+        model(x_t, t, hidden_states)
+
+
+def test_action_expert_rejects_device_mismatch() -> None:
+    model = _small_model()
+    x_t = torch.randn(2, 64, 3)
+    t = torch.tensor([0.2, 0.4])
+    hidden_states = torch.empty((2, 5, 4), device="meta")
+
+    with pytest.raises(ValueError, match="same device"):
+        model(x_t, t, hidden_states)
+
+
 def test_action_expert_rejects_empty_hidden_mask() -> None:
     model = _small_model()
     x_t = torch.randn(2, 64, 3)
