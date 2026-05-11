@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import subprocess
 import sys
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -24,6 +26,8 @@ from src.models.student_vlm import StudentVLM, StudentVLMConfig
 from src.train.config import Stage2Config, load_stage2_config
 from src.utils.seed import set_seed
 
+LOGGER = logging.getLogger(__name__)
+
 
 class Stage2Processor(Protocol):
     """Runtime protocol for Hugging Face processors used by Stage 2."""
@@ -38,6 +42,30 @@ class Stage2Processor(Protocol):
 def _run_text_command(args: list[str]) -> str:
     result = subprocess.run(args, check=True, capture_output=True, text=True)
     return result.stdout.strip()
+
+
+def configure_stage2_logging(output_dir: str | Path) -> Path:
+    """Configure console and file logging for Stage 2 progress."""
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    log_path = destination / "training.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    if not any(
+        isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == log_path
+        for handler in root_logger.handlers
+    ):
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        root_logger.addHandler(file_handler)
+    return log_path
 
 
 def write_reproducibility_files(config: Stage2Config, config_path: Path, output_dir: Path) -> None:
@@ -91,6 +119,25 @@ def _infer_teacher_hidden_dim(dataset: TeacherDumpDataset) -> int:
     if len(dataset.manifests) == 0:
         raise ValueError("Stage 2 training split is empty")
     return dataset.manifests[0].hidden_shape[1]
+
+
+def should_log_stage2_progress(
+    completed_steps: int,
+    total_steps: int,
+    log_every_steps: int,
+) -> bool:
+    """Return whether a Stage 2 progress line should be emitted for a step."""
+    if completed_steps <= 0:
+        raise ValueError("completed_steps must be positive")
+    if total_steps <= 0:
+        raise ValueError("total_steps must be positive")
+    if log_every_steps <= 0:
+        raise ValueError("Stage 2 log_every_steps must be positive")
+    return (
+        completed_steps == 1
+        or completed_steps == total_steps
+        or completed_steps % log_every_steps == 0
+    )
 
 
 def build_stage2_model(config: Stage2Config, teacher_hidden_dim: int) -> StudentVLM:
@@ -459,6 +506,7 @@ def cache_student_hidden_states(
     device: torch.device,
     config: Stage2Config,
     processor: Stage2Processor | None,
+    log_every_steps: int = 1,
 ) -> None:
     """Write adapted student hidden states for every clip in a dataset.
 
@@ -469,12 +517,22 @@ def cache_student_hidden_states(
         device: Device used for model inference.
         config: Stage 2 config controlling image preparation.
         processor: Optional processor for frame-backed VLM inputs.
+        log_every_steps: Emit progress after this many cached clips.
     """
     cache_dir = Path(output_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    total_steps = len(dataset)
+    started_at = time.monotonic()
+    LOGGER.info(
+        "stage2 cache started split=%s clips=%d output_dir=%s",
+        dataset.split_file,
+        total_steps,
+        cache_dir,
+    )
     model.eval()
     with torch.no_grad():
-        for example in dataset:
+        for cache_idx in range(1, total_steps + 1):
+            example = dataset[cache_idx - 1]
             batch = collate_teacher_examples([example])
             prepared = prepare_stage2_model_inputs(batch, config, device, processor)
             outputs = model(
@@ -486,6 +544,21 @@ def cache_student_hidden_states(
             )
             hidden = outputs.adapted_hidden_states.squeeze(0).detach().cpu().to(torch.float16)
             np.save(cache_dir / f"{example['clip_id']}.npy", hidden.numpy())
+            if should_log_stage2_progress(cache_idx, total_steps, log_every_steps):
+                LOGGER.info(
+                    "stage2 progress phase=cache split=%s step=%d/%d clip_id=%s elapsed_s=%.1f",
+                    dataset.split_file,
+                    cache_idx,
+                    total_steps,
+                    example["clip_id"],
+                    time.monotonic() - started_at,
+                )
+    LOGGER.info(
+        "stage2 cache completed split=%s clips=%d elapsed_s=%.1f",
+        dataset.split_file,
+        total_steps,
+        time.monotonic() - started_at,
+    )
 
 
 def run_stage2_training(config_path: str | Path) -> None:
@@ -497,19 +570,47 @@ def run_stage2_training(config_path: str | Path) -> None:
     """
     config_file = Path(config_path)
     config = load_stage2_config(config_file)
+    log_path = configure_stage2_logging(config.outputs.root)
+    LOGGER.info("stage2 logs writing to %s", log_path)
     set_seed(config.training.seed)
+    if config.training.log_every_steps <= 0:
+        raise ValueError("Stage 2 log_every_steps must be positive")
     if config.training.require_cuda and not torch.cuda.is_available():
         raise RuntimeError("Stage 2 config requires CUDA, but torch.cuda.is_available() is false")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    LOGGER.info(
+        "stage2 training setup config=%s device=%s epochs=%d grad_accum=%d max_frames=%d "
+        "image_pixels=%d-%d seed=%d",
+        config_file,
+        device,
+        config.training.epochs,
+        config.training.gradient_accumulation_steps,
+        config.data.max_frames,
+        config.data.image_min_pixels,
+        config.data.image_max_pixels,
+        config.training.seed,
+    )
+    LOGGER.info(
+        "stage2 loading train split root=%s split=%s",
+        config.data.teacher_dump_root,
+        config.data.train_split,
+    )
     train_dataset = TeacherDumpDataset(
         root=config.data.teacher_dump_root,
         split_file=config.data.train_split,
         include_kv_cache=config.data.include_kv_cache,
     )
     teacher_hidden_dim = config.model.teacher_hidden_dim or _infer_teacher_hidden_dim(train_dataset)
+    LOGGER.info(
+        "stage2 building model backbone=%s teacher_hidden_dim=%d",
+        config.model.backbone_name,
+        teacher_hidden_dim,
+    )
     model = build_stage2_model(config, teacher_hidden_dim=teacher_hidden_dim).to(device)
+    LOGGER.info("stage2 loading processor=%s", config.model.processor_name)
     processor = build_stage2_processor(config)
+    LOGGER.info("stage2 building optimizer")
     optimizer = build_stage2_optimizer(model, config)
     loss_config = Stage2LossConfig(
         alpha=config.loss.alpha,
@@ -524,9 +625,20 @@ def run_stage2_training(config_path: str | Path) -> None:
     )
     write_reproducibility_files(config, config_file, Path(config.outputs.root))
 
+    total_train_steps = len(loader) * config.training.epochs
+    LOGGER.info(
+        "stage2 training started clips=%d total_steps=%d log_every_steps=%d",
+        len(train_dataset),
+        total_train_steps,
+        config.training.log_every_steps,
+    )
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    for _epoch in range(config.training.epochs):
+    train_started_at = time.monotonic()
+    global_step = 0
+    optimizer_step = 0
+    for epoch_idx in range(config.training.epochs):
+        LOGGER.info("stage2 epoch started epoch=%d/%d", epoch_idx + 1, config.training.epochs)
         for step_idx, batch in enumerate(loader):
             tensor_batch = {
                 key: value.to(device)
@@ -543,13 +655,42 @@ def run_stage2_training(config_path: str | Path) -> None:
                 logit_position_mask=prepared["logit_position_mask"],
                 **prepared["model_kwargs"],
             )
-            loss: torch.Tensor = compute_stage2_loss(tensor_batch, outputs, loss_config).total
+            loss_output = compute_stage2_loss(tensor_batch, outputs, loss_config)
+            loss: torch.Tensor = loss_output.total
             scaled_loss: torch.Tensor = loss / config.training.gradient_accumulation_steps
             torch.autograd.backward([scaled_loss])
+            did_optimizer_step = False
             if (step_idx + 1) % config.training.gradient_accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+                optimizer_step += 1
+                did_optimizer_step = True
+            global_step += 1
+            if did_optimizer_step or should_log_stage2_progress(
+                global_step,
+                total_train_steps,
+                config.training.log_every_steps,
+            ):
+                LOGGER.info(
+                    "stage2 progress phase=train epoch=%d/%d step=%d/%d global_step=%d/%d "
+                    "optimizer_step=%d loss=%.6f coc_kl=%.6f hidden_align=%.6f "
+                    "lm_ce=%.6f elapsed_s=%.1f",
+                    epoch_idx + 1,
+                    config.training.epochs,
+                    step_idx + 1,
+                    len(loader),
+                    global_step,
+                    total_train_steps,
+                    optimizer_step,
+                    loss_output.total.detach().float().item(),
+                    loss_output.coc_kl.detach().float().item(),
+                    loss_output.hidden_align.detach().float().item(),
+                    loss_output.lm_ce.detach().float().item(),
+                    time.monotonic() - train_started_at,
+                )
+        LOGGER.info("stage2 epoch completed epoch=%d/%d", epoch_idx + 1, config.training.epochs)
 
+    LOGGER.info("stage2 saving artifacts output_dir=%s", config.outputs.student_vlm_dir)
     save_stage2_artifacts(model, config.outputs.student_vlm_dir)
     for split_file in (config.data.train_split, config.data.val_split, config.data.test_split):
         cache_dataset = TeacherDumpDataset(
@@ -564,4 +705,6 @@ def run_stage2_training(config_path: str | Path) -> None:
             device,
             config,
             processor,
+            log_every_steps=config.training.log_every_steps,
         )
+    LOGGER.info("stage2 training completed output_root=%s", config.outputs.root)

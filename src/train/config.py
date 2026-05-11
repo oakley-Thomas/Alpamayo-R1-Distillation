@@ -55,6 +55,7 @@ class Stage2TrainingConfig:
 
     epochs: int
     gradient_accumulation_steps: int
+    log_every_steps: int
     bf16: bool
     gradient_checkpointing: bool
     require_cuda: bool

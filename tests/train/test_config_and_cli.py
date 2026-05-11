@@ -23,6 +23,7 @@ from src.train.stage2 import (
     resolve_stage2_compute_dtype,
     save_stage2_artifacts,
     select_stage2_frame_paths,
+    should_log_stage2_progress,
 )
 
 MakeDump = Callable[..., tuple[Path, Path]]
@@ -69,6 +70,7 @@ def test_stage2_config_loads_defaults() -> None:
     assert config.data.image_max_pixels == 200704
     assert config.data.test_split == "data/splits/test.json"
     assert config.model.processor_name == config.model.backbone_name
+    assert config.training.log_every_steps == 1
 
 
 def test_stage3_config_loads_defaults() -> None:
@@ -115,6 +117,15 @@ def test_select_frame_paths_samples_across_clip() -> None:
         "frame_0006.jpg",
         "frame_0009.jpg",
     ]
+
+
+def test_stage2_progress_logging_cadence() -> None:
+    assert should_log_stage2_progress(completed_steps=1, total_steps=10, log_every_steps=4)
+    assert not should_log_stage2_progress(completed_steps=2, total_steps=10, log_every_steps=4)
+    assert should_log_stage2_progress(completed_steps=4, total_steps=10, log_every_steps=4)
+    assert should_log_stage2_progress(completed_steps=10, total_steps=10, log_every_steps=4)
+    with pytest.raises(ValueError, match="log_every_steps"):
+        should_log_stage2_progress(completed_steps=1, total_steps=10, log_every_steps=0)
 
 
 def test_prepare_stage2_model_inputs_retokenizes_coc_text(
