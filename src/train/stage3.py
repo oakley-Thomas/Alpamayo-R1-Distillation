@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import pickle
 import random
@@ -10,7 +11,7 @@ import sys
 import warnings
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,6 +31,23 @@ from src.losses.stage3 import Stage3LossConfig, compute_stage3_loss
 from src.models.action_expert import ActionExpertConfig, FlowMatchingActionExpert
 from src.train.config import Stage3Config, load_stage3_config
 from src.utils.seed import set_seed
+
+STAGE3_LOSS_LOG_FILENAME = "losses.jsonl"
+
+
+@dataclass(frozen=True)
+class Stage3LossLogEntry:
+    """Serializable Stage 3 loss row written after each optimizer step."""
+
+    epoch: int
+    step_in_epoch: int
+    steps_per_epoch: int
+    global_step: int
+    total_steps: int
+    learning_rate: float
+    loss_total: float
+    loss_flow_matching: float
+    loss_trajectory: float
 
 
 def _run_text_command(args: list[str]) -> str:
@@ -51,6 +69,37 @@ def write_stage3_reproducibility_files(
     env_text = _run_text_command([sys.executable, "-m", "pip", "freeze"])
     (output_dir / "env.txt").write_text(env_text + "\n", encoding="utf-8")
     (output_dir / "source_config_path.txt").write_text(str(config_path) + "\n", encoding="utf-8")
+
+
+def stage3_loss_log_path(output_root: str | Path) -> Path:
+    """Return the per-step Stage 3 JSONL loss log path."""
+    return Path(output_root) / STAGE3_LOSS_LOG_FILENAME
+
+
+def initialize_stage3_loss_log(log_path: str | Path) -> None:
+    """Create or truncate the Stage 3 JSONL loss log."""
+    destination = Path(log_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("", encoding="utf-8")
+
+
+def append_stage3_loss_log_entry(log_path: str | Path, entry: Stage3LossLogEntry) -> None:
+    """Append one Stage 3 loss row to the JSONL log."""
+    destination = Path(log_path)
+    with destination.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(asdict(entry), sort_keys=True) + "\n")
+
+
+def format_stage3_loss_log_entry(entry: Stage3LossLogEntry) -> str:
+    """Format one Stage 3 loss row for console progress logs."""
+    return (
+        f"stage3 step {entry.global_step}/{entry.total_steps} "
+        f"epoch {entry.epoch} batch {entry.step_in_epoch}/{entry.steps_per_epoch} "
+        f"total={entry.loss_total:.6f} "
+        f"flow_matching={entry.loss_flow_matching:.6f} "
+        f"trajectory={entry.loss_trajectory:.6f} "
+        f"lr={entry.learning_rate:.6g}"
+    )
 
 
 def resolve_stage3_device(config: Stage3Config) -> torch.device:
@@ -213,10 +262,16 @@ def run_stage3_training(config_path: str | Path) -> None:
     )
     loss_config = Stage3LossConfig(gamma=config.loss.gamma)
 
-    write_stage3_reproducibility_files(config, config_file, Path(config.outputs.root))
+    output_root = Path(config.outputs.root)
+    write_stage3_reproducibility_files(config, config_file, output_root)
+    loss_log_path = stage3_loss_log_path(output_root)
+    initialize_stage3_loss_log(loss_log_path)
     model.train()
-    for _epoch in range(config.training.epochs):
-        for batch in loader:
+    global_step = 0
+    steps_per_epoch = len(loader)
+    for epoch_idx in range(config.training.epochs):
+        for step_idx, batch in enumerate(loader):
+            global_step += 1
             tensor_batch = _move_stage3_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
             with _stage3_autocast(config, device):
@@ -228,6 +283,19 @@ def run_stage3_training(config_path: str | Path) -> None:
             torch.autograd.backward([loss_output.total])
             optimizer.step()
             scheduler.step()
+            log_entry = Stage3LossLogEntry(
+                epoch=epoch_idx + 1,
+                step_in_epoch=step_idx + 1,
+                steps_per_epoch=steps_per_epoch,
+                global_step=global_step,
+                total_steps=total_steps,
+                learning_rate=_optimizer_learning_rate(optimizer),
+                loss_total=_loss_scalar(loss_output.total),
+                loss_flow_matching=_loss_scalar(loss_output.flow_matching),
+                loss_trajectory=_loss_scalar(loss_output.trajectory),
+            )
+            append_stage3_loss_log_entry(loss_log_path, log_entry)
+            print(format_stage3_loss_log_entry(log_entry), flush=True)
 
     save_stage3_checkpoint(
         model=model,
@@ -298,6 +366,17 @@ def _python_rng_state() -> dict[str, object]:
         "state": list(state),
         "gauss": None if gauss is None else float(gauss),
     }
+
+
+def _optimizer_learning_rate(optimizer: torch.optim.Optimizer) -> float:
+    learning_rate = optimizer.param_groups[0].get("lr")
+    if not isinstance(learning_rate, (int, float)):
+        raise TypeError("optimizer learning rate must be numeric")
+    return float(learning_rate)
+
+
+def _loss_scalar(loss: torch.Tensor) -> float:
+    return float(loss.detach().float().cpu().item())
 
 
 def _move_stage3_batch(
