@@ -1,0 +1,17 @@
+.git/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+__pycache__/
+*.py[cod]
+.venv/
+
+alpamayo1.5/.git/
+alpamayo1.5/notebooks/.ipynb_checkpoints/
+
+data/teacher_dump/
+outputs/
+*.pt
+*.pth
+*.ckpt
+.env
