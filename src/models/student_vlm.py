@@ -37,6 +37,7 @@ class StudentVLMConfig:
     lora_rank: int = 64
     lora_alpha: int = 128
     lora_dropout: float = 0.05
+    compute_dtype: torch.dtype = torch.bfloat16
 
 
 class HiddenStateAdapter(nn.Module):
@@ -123,7 +124,7 @@ class StudentVLM(nn.Module):
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_compute_dtype=config.compute_dtype,
             bnb_4bit_use_double_quant=True,
         )
         backbone = cast(
@@ -131,7 +132,7 @@ class StudentVLM(nn.Module):
             AutoModelForVision2Seq.from_pretrained(
                 config.backbone_name,
                 quantization_config=quantization_config,
-                torch_dtype=torch.bfloat16,
+                torch_dtype=config.compute_dtype,
             ),
         )
         prepare_for_kbit = cast(Callable[..., nn.Module], prepare_model_for_kbit_training)

@@ -100,9 +100,22 @@ def build_stage2_model(config: Stage2Config, teacher_hidden_dim: int) -> Student
             lora_rank=config.model.lora_rank,
             lora_alpha=config.model.lora_alpha,
             lora_dropout=config.model.lora_dropout,
+            compute_dtype=resolve_stage2_compute_dtype(config),
         ),
         teacher_hidden_dim=teacher_hidden_dim,
     )
+
+
+def resolve_stage2_compute_dtype(config: Stage2Config) -> torch.dtype:
+    """Resolve the Stage 2 model compute dtype from config and hardware support."""
+    if not config.training.bf16:
+        return torch.float16
+    if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        raise RuntimeError(
+            "Stage 2 config requests bf16, but this CUDA device does not support bf16. "
+            "Set training.bf16 to false to load Qwen with fp16 on this GPU."
+        )
+    return torch.bfloat16
 
 
 def build_stage2_processor(config: Stage2Config) -> Stage2Processor:

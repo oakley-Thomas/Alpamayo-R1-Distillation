@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import torch
 from torch import nn
 
@@ -15,6 +17,7 @@ from src.train.config import load_stage2_config
 from src.train.stage2 import (
     load_stage2_artifacts,
     prepare_stage2_model_inputs,
+    resolve_stage2_compute_dtype,
     save_stage2_artifacts,
 )
 
@@ -49,6 +52,24 @@ def test_prepare_stage2_model_inputs_without_processor(mini_dump: tuple[Path, Pa
     assert prepared["input_ids"].shape == (1, 3)
     assert prepared["hidden_position_mask"].shape == (1, 3)
     assert prepared["logit_position_mask"].shape == (1, 3)
+
+
+def test_stage2_compute_dtype_uses_fp16_when_bf16_disabled() -> None:
+    config = load_stage2_config("configs/stage2.yaml")
+    config = replace(config, training=replace(config.training, bf16=False))
+
+    assert resolve_stage2_compute_dtype(config) is torch.float16
+
+
+def test_stage2_compute_dtype_rejects_unsupported_bf16(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_stage2_config("configs/stage2.yaml")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+
+    with pytest.raises(RuntimeError, match="does not support bf16"):
+        resolve_stage2_compute_dtype(config)
 
 
 def test_save_stage2_artifacts_writes_hidden_adapter(tmp_path: Path) -> None:
